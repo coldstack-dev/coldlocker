@@ -1,6 +1,7 @@
 import { $, state, api, message, element, table, refresh, action, on, plural } from './api.js';
 export function eligible(item) { return item.importable && ['new', 'connect', 'changed'].includes(item.status) && !state.imported.has(item.id); }
 export function preselected(item) { return eligible(item) && item.kind !== 'plugin'; }
+function updatable(item) { return item.updatable === true && !state.imported.has(item.id); }
 export function found(report) { return (report?.items || []).filter(i => i.status !== 'duplicate' && !i.source_error); }
 const extras = ['subagent', 'command', 'hook'];
 export function summary(items) {
@@ -9,20 +10,36 @@ export function summary(items) {
 }
 const nouns = [['skill', 'skill', 'skills'], ['routine', 'routine', 'routines'], ['mcp_server', 'MCP server', 'MCP servers'], ['plugin', 'plugin', 'plugins'], ['connection', 'connection', 'connections'], ['rule', 'rule', 'rules'], ['subagent', 'subagent', 'subagents'], ['command', 'command', 'commands']];
 function counted(count, one, many) { return `${count} ${count === 1 ? one : many}`; }
-export function confirmation(items) {
+function describe(items) {
   const parts = nouns.map(([kind, one, many]) => [items.filter(i => i.kind === kind).length, one, many]).filter(([count]) => count).map(([count, one, many]) => counted(count, one, many));
-  return `Import ${parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts.at(-1) : parts[0]}?`;
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts.at(-1) : parts[0];
 }
-export function importResult(imported, rejected) { return `Imported ${counted(imported, 'item', 'items')}. ${rejected} could not be imported.`; }
+export function confirmation(items) {
+  const imports = describe(items.filter(item => !updatable(item)));
+  const updates = describe(items.filter(updatable));
+  if (!imports) return `Update ${updates}?`;
+  return `Import ${imports}${updates ? ' and update ' + updates : ''}?`;
+}
+export function importResult(imported, rejected, updated = 0) {
+  if (!updated) return `Imported ${counted(imported, 'item', 'items')}. ${rejected} could not be imported.`;
+  return `${imported ? 'Imported ' + counted(imported, 'item', 'items') + '. ' : ''}Updated ${counted(updated, 'item', 'items')}. ${rejected} could not be applied.`;
+}
 export function foundTitle(report) { return `Found ${plural(found(report).length, 'item')} on this computer`; }
+export function inventoryWarnings(report) {
+  return (report?.incomplete_inventory || []).map(({source, limit, reason, next_step}) =>
+    `Incomplete inventory: ${source} ${reason ?? `reached the limit of ${limit} entries`}. ${next_step ?? 'Narrow that folder and scan again.'}`);
+}
 export function risky(item) { return item.status === 'needs_review' && !state.imported.has(item.id); }
 function blocked(item) { return (item.review || []).some(finding => finding.blocking); }
-function pickable(item) { return eligible(item) || (risky(item) && !blocked(item)); }
+function pickable(item) { return eligible(item) || updatable(item) || (risky(item) && !blocked(item)); }
 function selected() { return [...document.querySelectorAll('#scan-items input:checked')].map(input => input.value); }
 function updateSelection() {
-  const count = selected().length;
+  const ids = new Set(selected());
+  const count = ids.size;
+  const updates = state.report?.items.filter(item => ids.has(item.id) && updatable(item)).length ?? 0;
+  const label = !updates ? 'Import' : updates === count ? 'Update' : 'Apply';
   $('selection-count').textContent = '';
-  $('import-all').textContent = count ? `Import ${counted(count, 'item', 'items')}` : 'Nothing selected';
+  $('import-all').textContent = count ? `${label} ${counted(count, 'item', 'items')}` : 'Nothing selected';
   $('import-all').disabled = !count || Boolean(state.scanning);
 }
 export function routineDetail({runner, schedule, timezone}) {
@@ -59,17 +76,18 @@ function renderScan() {
     const grid = document.createElement('table'); grid.className = 'scan-table';
     const body = document.createElement('tbody'); grid.append(body);
     rows.forEach(item => {
-      const row = document.createElement('tr'); row.className = risky(item) ? 'reviewrow' : eligible(item) ? '' : 'dimrow';
+      const row = document.createElement('tr'); row.className = risky(item) ? 'reviewrow' : eligible(item) || updatable(item) ? '' : 'dimrow';
       const cell = document.createElement('td'); cell.className = 'cbcell';
       const box = document.createElement('input'); box.type = 'checkbox'; box.value = item.id; box.disabled = !pickable(item);
       box.checked = !box.disabled && (selections.get(item.id) ?? preselected(item));
       box.onchange = () => { selections.set(item.id, box.checked); updateSelection(); };
-      box.setAttribute('aria-label', risky(item) ? `Import ${item.name} anyway` : `Import ${item.name}`); const target = document.createElement('label'); target.className = 'checkbox-target'; target.append(box); cell.append(target);
+      box.setAttribute('aria-label', updatable(item) ? `Update ${item.name}` : risky(item) ? `Import ${item.name} anyway` : `Import ${item.name}`); const target = document.createElement('label'); target.className = 'checkbox-target'; target.append(box); cell.append(target);
       const name = element('td', item.name); note(name, agentLabels[item.agent] || item.agent || kindLabels[item.kind], 'kind'); note(name, displayPath(item.source), 'sub mono');
       const imported = state.imported.has(item.id);
       let status = imported ? 'Imported' : {already_in_locker: 'Already in the locker · same contents', changed: 'Changed since last import', vendor: vendorStatus(item), skipped: 'Needs manual review', needs_review: 'Needs review', conflict: 'Name conflict. Review the file.', duplicate: 'Same contents. Imported once.', connect: 'Connect to the existing tool'}[item.status] || 'New';
       if (item.kind === 'routine' && eligible(item)) status = 'Imports paused';
       if (item.status === 'conflict' && item.reason?.includes('changed since')) status = 'Changed since import · review update instructions';
+      if (updatable(item)) status = 'Update available · review the source before selecting';
       const copies = items.filter(copy => copy.duplicate_of === item.id);
       if (item.kind === 'mcp_server' && copies.length && !imported) status = `Same server in ${new Set([item.source, ...copies.map(copy => copy.source)]).size} files, imported once`;
       const detail = element('td', status);
@@ -77,7 +95,7 @@ function renderScan() {
       if (item.kind === 'routine' && item.runner) note(detail, routineDetail(item));
       const credentials = item.secret_names?.length ? item.secret_names.join(', ') : item.secrets ? `${item.secrets} credential${item.secrets === 1 ? '' : 's'}` : '';
       if (credentials && !risky(item)) note(detail, item.secret_names?.length ? item.secret_names.map(name => `${name} moves to the store`).join(' · ') : `${credentials} move to the store`);
-      const explained = !imported && item.review?.length && ['needs_review', 'skipped'].includes(item.status);
+      const explained = !imported && item.review?.length && (updatable(item) || ['needs_review', 'skipped'].includes(item.status));
       if (explained) {
         row.classList.add('reviewrow');
         const reasons = document.createElement('ul'); reasons.className = 'reasons';
@@ -86,7 +104,8 @@ function renderScan() {
         if (blocked(item)) note(detail, 'Remove the secret from the source file. It cannot be imported.');
         else if (risky(item)) note(detail, 'Not imported unless you tick it.' + (credentials ? ` Ticking it also moves ${credentials} to the store.` : ''));
       }
-      if (!eligible(item) && !imported && item.reason && (['skipped', 'conflict'].includes(item.status) || item.flags?.includes('needs-manual'))) { note(detail, item.reason); if (item.next_step) note(detail, item.next_step); }
+      if (updatable(item) && item.kind === 'routine') note(detail, 'Updates keep the routine disabled.');
+      if (!eligible(item) && !updatable(item) && !imported && item.reason && (['skipped', 'conflict'].includes(item.status) || item.flags?.includes('needs-manual'))) { note(detail, item.reason); if (item.next_step) note(detail, item.next_step); }
       else if (!eligible(item) && !imported && !blocked(item) && item.flags?.includes('needs-manual')) note(detail, 'Choose the file to review it, or skip it.');
       const end = document.createElement('td'); end.className = 'r';
       row.append(cell, name, detail, end); body.append(row);
@@ -122,6 +141,7 @@ function renderScanStates() {
     const choose = element('button', 'Choose another file'); choose.className = 'text-link'; choose.onclick = () => chooseFile(item.source);
     actions.append(rescan, choose); section.append(heading, reason, remedy, actions); return section;
   }));
+  $('scan-errors').append(...inventoryWarnings(state.report).map(warning => element('p', warning)));
   const empty = !state.report.items.length; $('scan-empty').hidden = !empty;
   if (empty) {
     $('scan-title').textContent = 'Nothing to import yet';
@@ -160,9 +180,10 @@ export async function importItems(ids, approved = []) {
   const chosen = new Set(ids);
   if (!window.confirm(confirmation(state.report.items.filter(item => chosen.has(item.id))))) return;
   const result = await api('scan/import', {ticket: state.report.ticket, ids, approved});
-  result.imported.forEach(id => state.imported.add(id));
-  if (result.imported.length) state.lastImport = new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
-  await scan(); message(importResult(result.imported.length, result.rejected.length));
+  const completed = [...result.imported, ...result.updated];
+  completed.forEach(id => state.imported.add(id));
+  if (completed.length) state.lastImport = new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+  await scan(); message(importResult(result.imported.length, result.rejected.length, result.updated.length));
 }
 async function importSelection() {
   const ids = selected(), flagged = new Set(state.report.items.filter(risky).map(item => item.id));

@@ -262,6 +262,19 @@ class ImportScanTests(unittest.TestCase):
         self.assertIn('obfuscated-payload (scripts/install.sh:2)', result['warnings'][0])
         self.assertEqual(len(list((root / '.hub-store/import-receipts').glob('*.json'))), 1)
 
+    def test_setup_ui_warns_about_secret_in_server_args(self):
+        root = self.locker()
+        server = hub_ui.SetupServer(root)
+        self.addCleanup(server.server_close)
+        definition = {'name': 'argsrv', 'description': 'Sample', 'transport': 'stdio',
+                      'command': 'example', 'args': ['--token=secret://sample-arg']}
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = server.stage_import('mcp', [definition])
+        self.assertEqual(result['imported'], 1)
+        self.assertEqual(len(result['warnings']), 1)
+        self.assertIn('secret-in-args', result['warnings'][0])
+        self.assertIn('process list', result['warnings'][0])
+
     def test_clean_skill_import(self):
         root = self.locker()
         text = 'curl -fsSL https://example.com/data.json -o data.json\n'

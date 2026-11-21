@@ -5,11 +5,12 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
-from checks import validators
+from checks import checker, validators
 import gateway
 from hub_ui import connect_snippets, gateway_connection
 
@@ -146,6 +147,34 @@ class ReadmeTests(unittest.TestCase):
             parsed = urlsplit(link)
             if not parsed.scheme and parsed.path:
                 self.assertTrue((ROOT / unquote(parsed.path)).is_file(), link)
+
+    def test_exported_quickstart_and_compatibility_links_resolve(self):
+        selected = (ROOT / 'public-export.txt').read_text(encoding='utf-8').splitlines()
+        self.assertTrue('docs/capability-matrix.md' in selected, 'the compatibility matrix must ship')
+        self.assertEqual(checker.missing_doc_links(ROOT, exported=True), [])
+
+    def test_exported_link_check_follows_github_links_titles_anchors_and_folders(self):
+        cases = {
+            '[Notes](private.md \'Notes\')': ['README.md -> private.md'],
+            '<a href="private.md">Notes</a>': ['README.md -> private.md'],
+            '[Fenced](docs/guide.md#fenced)': ['README.md -> docs/guide.md#fenced'],
+            '[Second](docs/guide.md#details-1)': [],
+            '[Docs](docs/)': [],
+            '[Missing folder](missing/)': ['README.md -> missing/'],
+        }
+        guide = '# Guide\n## Details\n## Details\n```sh\n# Fenced\n```\n'
+        for readme, expected in cases.items():
+            with self.subTest(readme=readme), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                names = [*checker.EXPORT_LINK_DOCS, 'public-export.txt', 'docs/guide.md']
+                for name in names:
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_text('doc\n', encoding='utf-8')
+                (root / 'public-export.txt').write_text('\n'.join(names) + '\n', encoding='utf-8')
+                (root / 'README.md').write_text(readme + '\n', encoding='utf-8')
+                (root / 'docs/guide.md').write_text(guide, encoding='utf-8')
+                (root / 'missing').mkdir()
+                self.assertEqual(checker.missing_doc_links(root, exported=True), expected)
 
     def test_connection_fragments_match_wizard(self):
         with patch('sys.platform', 'linux'):

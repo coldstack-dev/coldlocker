@@ -534,6 +534,9 @@ def dispatch(request, root=ROOT):
     if isinstance(identity, (dict, list, bool)):
         return {"jsonrpc": "2.0", "id": None, **error(-32600, "Invalid Request")}
     params = request.get("params", {})
+    if isinstance(params, dict) and "_meta" in params:
+        params = params.copy()
+        del params["_meta"]
     response = {"jsonrpc": "2.0", "id": identity}
     try:
         if not isinstance(params, dict):

@@ -25,7 +25,7 @@ def rules(inv, base):
 def exec_policies(inv, base):
     codex = home_for(inv, base)
     if codex:
-        for path in inv.walk(codex / 'rules', depth=0):
+        for path in inv.walk(codex / 'rules', depth=0, report_depth=False):
             if path.suffix == '.rules':
                 execpolicy(inv, path)
 
@@ -57,7 +57,7 @@ def hooks(inv, base):
 
 def prompts(inv):
     if inv.codex_home:
-        markdown_files(inv, 'codex', inv.codex_home / 'prompts', 'command', depth=0)
+        markdown_files(inv, 'codex', inv.codex_home / 'prompts', 'command', depth=0, report_depth=False)
 
 
 def automations(inv):

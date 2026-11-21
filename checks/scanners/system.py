@@ -49,7 +49,7 @@ def discover(inv):
                     inv.failed('system', 'routine', '<system:crontab>')
         except ERRORS:
             inv.failed('system', 'routine', '<system:crontab>')
-    for path in inv.walk(inv.home / '.config/systemd/user', depth=1):
+    for path in inv.walk(inv.home / '.config/systemd/user', depth=1, report_depth=False):
         if path.suffix != '.timer':
             continue
         try:
@@ -78,7 +78,7 @@ def discover(inv):
         except ERRORS:
             inv.failed('system', 'routine', path)
     if inv.platform == 'darwin':
-        for path in inv.walk(inv.home / 'Library/LaunchAgents', depth=1):
+        for path in inv.walk(inv.home / 'Library/LaunchAgents', depth=1, report_depth=False):
             if path.suffix != '.plist':
                 continue
             try:

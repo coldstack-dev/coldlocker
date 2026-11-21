@@ -39,6 +39,45 @@ multi-user cloud service is not implied by this requirement.
    are separate possible delivery paths; the latter requires its own live
    interoperability proof before being claimed as supported.
 
+## Reuse an existing authenticated integration
+
+### Check an existing Composio connection
+
+1. Select an already authorized Composio session that the running Coldlocker
+   gateway already serves. Confirm the granted scopes privately and choose one
+   read tool with a known, harmless result. Record **UNVERIFIED** if the session,
+   gateway binding, current grant, or suitable read is unavailable.
+2. Run the read through the original client, then call the same tool with the
+   same arguments through the gateway from a connected client. Repeat the
+   original client read to confirm the existing configuration still works.
+   Compare each result to the expected value privately.
+3. Record the date, caller type, approved scope names, read operation, and
+   whether each result matched. Omit credentials, account identifiers, session
+   URLs, and private response content. Use the fixture below to check the
+   missing-grant case.
+
+Use the existing [Composio upstream connection](composio.md#composio-upstream--local-gateway).
+All live steps use the current grant and existing configuration. Live Composio
+reuse is **UNVERIFIED**.
+
+### Run the synthetic cases
+
+```sh
+python3 -m unittest discover -s tests -p test_composio.py -k store_render_header_flow
+python3 -m unittest discover -s tests -p test_scanner.py -k openmcp_stdio_import
+python3 -m unittest discover -s tests -p test_executor_connector.py -k test_sse_pagination_and_call
+python3 -m unittest discover -s tests -p test_executor_connector.py -k test_wrong_endpoint_auth
+```
+
+| Case | Expected result |
+| --- | --- |
+| Composio header-protected fixture | The request without a key receives HTTP 401. With the existing fixture key, the tool returns `5` and the key stays private. |
+| OpenMCP-style stdio entry | Scan imports the pinned command and arguments, preserves the original client config, and renders a private environment binding. The fixture does not launch the package. |
+| Executor MCP fixture | The connector lists tools and reads `5` using the existing header binding. An incorrect header value yields `unreachable` without exposing the value. |
+
+For a loopback call through MCPHub, see the verification instructions in the
+[Composio connector guide](composio.md#composio-upstream--local-gateway).
+
 ## Compatibility and evidence
 
 The initial acceptance targets and current evidence are:
@@ -47,6 +86,7 @@ The initial acceptance targets and current evidence are:
 | --- | --- | --- | --- |
 | Claude Code | Local stdio catalog | Real synthetic skill/supporting-file use; fresh model session observed the shared guide and routine-prompt update | Independent fresh-user setup |
 | Codex CLI | Local stdio catalog | Real model-driven read/use task; later T3-triggered CLI run fetched and executed the current routine and supporting skill | Independent fresh-user setup; native app scheduler remains separate |
+| OpenCode | Local stdio catalog | Clean [scripted run](#opencode-use-journey) discovered an imported skill, retrieved its supporting file and returned a result computed from the file | Model-driven skill use, content updates, routine execution and upstream gateway execution |
 | Hosted Bot | User's remote catalog and platform routine handoff | Mac app connection screenshot; user-reported initial and updated skill/supporting-file results match source; routine and prompt fetched after an update | Independent fresh-user setup; native scheduling is optional and unproved |
 | T3 with local Codex and Claude Code | Native T3 manual trigger invoking controlled local CLI jobs and stdio MCP | Both clients fetched the central routine and returned its expected result; task verified disabled afterward | Automatic interval firing, T3 remote OAuth and native Codex/Claude app schedulers not proved |
 | Dots, hosted Muse, MausBot, T3 remote OAuth | Capability-specific handoff or fallback | Remote capability unconfirmed in the current project records | Establish a supported path before advertising compatibility |
@@ -101,6 +141,30 @@ For remote acceptance, identify the deployed source and published catalog
 revision, verify owner authorization and access boundaries, and record the
 actual hosted bot's task result. Use nonsecret representative content. A
 successful local Worker test or an unauthenticated rejection is insufficient.
+
+### OpenCode use journey
+
+On 2026-11-20, OpenCode 1.19.6 ran on Linux with Python 3.14.4, a fresh
+HOME and XDG directories, a copied catalog runtime and a synthetic imported
+skill. The client used a one-run MCP configuration for the local
+`mcp_endpoint.py` and allowed only the two catalog tools.
+
+`opencode run --pure --format json --print-logs --model local/fixture` asked
+OpenCode to find a skill for a parcel task and follow its instructions. The
+JSON events show two completed calls, `coldlocker_hub_list_skills` followed by
+`coldlocker_hub_get_item` for the `catalog-sample` skill. The second result
+included `references/guide.md` with a generated audit marker and the counts
+7 and 4. The client printed `birch-025f66 | parcels=11` and exited 0.
+
+The scripted loopback provider chose the two calls and computed the answer
+from their returned content. Model-driven skill use remains unknown. The two
+unauthenticated hosted model attempts hit the free usage limit before making a
+catalog tool call.
+
+In the empty HOME, `python3 hub.py connect --agent opencode` printed the
+stdio entry for manual setup and created no client config. The
+[stdio handshake](clients.md#try-without-touching-your-config) checks catalog
+access without a model login.
 
 ## Release boundary
 

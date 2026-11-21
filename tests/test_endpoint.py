@@ -503,6 +503,24 @@ class SkillFilesTests(CatalogCase):
 
 
 class ProtocolTests(CatalogCase):
+    def test_strict_methods_accept_request_metadata(self):
+        uri = "coldlocker://skills/sample/references/guide.md"
+        resource_params = {"uri": uri, "_meta": {}}
+        prompt_params = {"name": "sample", "_meta": {}}
+        with self.subTest(method="resources/read"):
+            response = self.call("resources/read", resource_params)
+            self.assertEqual(response, {"jsonrpc": "2.0", "id": 1, "result": {"contents": [
+                {"uri": uri, "mimeType": "text/markdown", "text": "Guide text\n"},
+            ]}})
+        with self.subTest(method="prompts/get"):
+            response = self.call("prompts/get", prompt_params)
+            self.assertNotIn("error", response)
+            self.assertEqual(response["result"]["description"], "Sample skill")
+        for method, params in (("resources/read", resource_params), ("prompts/get", prompt_params)):
+            with self.subTest(method=method, unknown=True):
+                response = self.call(method, {**params, "unknown": True})
+                self.assertEqual(response["error"]["code"], -32602)
+
     def test_version_negotiation(self):
         for requested in ("2025-06-18", "2025-03-26", "2024-11-05"):
             with self.subTest(requested=requested):

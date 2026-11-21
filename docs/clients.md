@@ -28,9 +28,13 @@ server, and no entry contains credentials. Executor header references are in
 
 Once the gateway serves an imported server, a client that also keeps a direct
 entry for it sees every tool twice. `python3 hub.py connect --write --retire-direct`
-lists each user-level direct entry whose name matches a server the running
-gateway lists tools for, and after confirmation removes them in the same
-backed-up write. The printed `Undo:` command restores the previous file.
+lists each user-level direct entry that the running gateway lists tools for,
+and after confirmation removes them in the same
+backed-up write. An entry counts only when a scan of that same settings file
+finds it identical to its catalog copy (same command, arguments, environment
+and headers, with the name normalized as import normalizes it); a same-name
+entry that differs stays, whichever client or scope it is in. The printed
+`Undo:` command restores the previous file.
 Project-level entries are untouched. A server whose name is another catalog
 server's name plus a `-` suffix is never retired, because gateway tool names
 can't tell the two apart. When the gateway requires a token,
@@ -40,11 +44,17 @@ supported.
 ## Imported MCP servers
 
 On Linux and macOS, imported MCP servers reach each client that `connect` writes
-through the gateway. While it is stopped, `connect` names the imported servers and
-prints the command that installs, prepares and starts it; rerun `connect`
-afterwards to add `coldlocker-gateway`. To list each tool once in the client you
-imported from, run `connect --write --retire-direct --agent <that client>`: it
-matches entries by name only, so limit it to that client and check the listed
+through the local gateway. While it is stopped, apply the `coldlocker` entry
+to use the catalog. To run imported tools, follow the install, prepare, and start
+command in the preview. Check the [gateway requirements](gateway.md#requirements)
+if setup fails.
+Run `python3 gateway.py status` to check which servers connected, then preview
+and apply the entries again to add `coldlocker-gateway`.
+
+The gateway keeps the upstream credentials. If you started it with
+`--require-token`, load `COLDLOCKER_GATEWAY_TOKEN` into the client's environment
+before restarting it. See [gateway setup](gateway.md). To list each tool once in
+the client you imported from, run `connect --write --retire-direct` and check the listed
 entries before you confirm. Claude Desktop gets no gateway entry; add imported
 servers there by hand.
 

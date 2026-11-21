@@ -265,6 +265,34 @@ def local_patterns(root):
     return patterns, errors
 
 
+def private_pattern_lines(content, patterns):
+    for number, line in enumerate(content.splitlines(), 1):
+        if any(pattern.search(line) for pattern in patterns):
+            yield number
+
+
+def json_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        yield from value
+        for child in value.values():
+            yield from json_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from json_strings(child)
+
+
+def screen_private_patterns(root, texts):
+    patterns, errors = local_patterns(root)
+    if errors:
+        raise ValueError("; ".join(errors))
+    if patterns:
+        for text in texts:
+            for line in private_pattern_lines(text, patterns):
+                raise ValueError(f"outbound payload matched private-pattern at line {line}")
+
+
 def scan(root, paths=None):
     extra, errors = local_patterns(root)
     paths = git_files(root) if paths is None else paths
@@ -288,7 +316,6 @@ def scan(root, paths=None):
         exempt = FILE_RULE_EXEMPTIONS.get(relative.as_posix(), set())
         found = {finding for finding in found if finding[1] not in exempt}
         if relative.as_posix() not in PRIVATE_PATTERN_EXEMPT:
-            found.update((number, "private-pattern") for number, text in enumerate(content.splitlines(), 1)
-                         if any(pattern.search(text) for pattern in extra))
+            found.update((number, "private-pattern") for number in private_pattern_lines(content, extra))
         errors.extend(f"{relative.as_posix()}:{line}: {rule}" for line, rule in sorted(found))
     return errors

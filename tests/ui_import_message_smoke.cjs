@@ -31,7 +31,12 @@ const fetch = async (url, init) => {
   if (route === 'status') return {ok: true, json: async () => ({counts: {skills: 0, routines: 0, mcp_servers: 0}, auth: []})};
   const body = JSON.parse(init.body);
   posted.push(body.ids);
-  return {ok: true, json: async () => ({imported: body.ids.slice(rejected), rejected: body.ids.slice(0, rejected)})};
+  const updates = new Set(items.filter(item => item.updatable).map(item => item.id));
+  return {ok: true, json: async () => ({
+    imported: body.ids.slice(rejected).filter(id => !updates.has(id)),
+    updated: body.ids.slice(rejected).filter(id => updates.has(id)),
+    rejected: body.ids.slice(0, rejected)
+  })};
 };
 const window = {addEventListener() {}, confirm: text => { prompts.push(text); return answer; }};
 const context = vm.createContext({document, window, fetch, console});
@@ -103,6 +108,23 @@ assert.equal(run("confirmation([{kind:'skill'},{kind:'skill'},{kind:'routine'},{
   await run('scan()');
   assert.equal(checkbox('s1').checked, true, 'a fresh scan initializes new default selections');
   assert.equal(checkbox('review').checked, false, 'review approval must not carry into a new scan');
+
+  items.splice(0, items.length,
+    {id: 's3', name: 'notes', kind: 'skill', status: 'conflict', updatable: true, importable: false, source: '~/notes'},
+    {id: 'r2', name: 'job', kind: 'routine', status: 'conflict', updatable: true, importable: false, source: '~/job'},
+    {id: 's4', name: 'edited', kind: 'skill', status: 'conflict', importable: false, source: '~/edited'});
+  await run('scan()');
+  assert.equal(checkbox('s3').checked, false);
+  assert.equal(checkbox('r2').checked, false);
+  assert.equal(checkbox('s4').disabled, true);
+  assert.equal(get('import-all').disabled, true);
+  choose('s3', true);
+  choose('r2', true);
+  assert.equal(get('import-all').textContent, 'Update 2 items');
+  await get('import-all').onclick();
+  assert.equal(prompts.at(-1), 'Update 1 skill and 1 routine?');
+  assert.deepEqual(posted.at(-1), ['s3', 'r2']);
+  assert.equal(get('message').textContent, 'Updated 2 items. 0 could not be applied.');
   console.log('Navigation preserves scan choices; fresh scans reset approvals and imported rows stay excluded.');
   console.log('Import confirmation, singular/plural result and scroll-into-view passed.');
 })().catch(error => { console.error(error); process.exit(1); });

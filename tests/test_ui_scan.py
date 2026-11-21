@@ -4,8 +4,10 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 import connect
+import hub
 import safety_fixtures
 import test_ui
 
@@ -46,6 +48,124 @@ class ScanUITests(unittest.TestCase):
         self.assertEqual(self.post_status()['check'], 'Passed')
         process = subprocess.run([sys.executable, '-c', 'import sys; from pathlib import Path; from checks import checker; sys.exit(checker.run(Path(sys.argv[1])))', str(self.root)], cwd=REPO, capture_output=True)
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+
+    def test_scan_reports_depth_bound_for_redacted_codex_home(self):
+        codex_home = self.fixtures / 'alternate-codex'
+        self.server.scan_env = {'CODEX_HOME': str(codex_home)}
+        boundary = codex_home / 'skills/a/b/c/d/e'
+        boundary.mkdir(parents=True)
+        source = '<codex-home>/skills'
+        self.assertFalse(any(row['source'] == source for row in self.post('scan', {})['incomplete_inventory']))
+        nested = boundary / 'nested-skill'
+        nested.mkdir()
+        (nested / 'SKILL.md').write_text(
+            '---\nname: nested-skill\ndescription: Nested fixture\n---\nBody.\n', encoding='utf-8')
+        report = self.post('scan', {})
+        self.assertNotIn('nested-skill', {item['name'] for item in report['items']})
+        self.assertNotIn(str(codex_home), json.dumps(report['incomplete_inventory']))
+        self.assertIn({
+            'source': source, 'limit': 5, 'reason': 'reached the depth limit of 5',
+            'next_step': 'Narrow that folder and scan again.',
+        }, report['incomplete_inventory'])
+
+    def test_reviewed_scan_updates_skill_and_routine_for_connected_client(self):
+        skill = self.home / '.claude/skills/review-notes/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        protected = skill.parent.with_name('protected-notes') / 'SKILL.md'
+        protected.parent.mkdir()
+        units = self.home / '.config/systemd/user'
+        units.mkdir(parents=True, exist_ok=True)
+        service = units / 'review-job.service'
+        service.with_suffix('.timer').write_text('[Timer]\nOnCalendar=daily\n', encoding='utf-8')
+
+        def write_sources(version):
+            skill.write_text(safety_fixtures.front('review-notes', f'Take {version} notes.'), encoding='utf-8')
+            protected.write_text(safety_fixtures.front('protected-notes', f'Keep {version} notes.'), encoding='utf-8')
+            service.write_text(f'[Service]\nExecStart=/bin/echo {version}\n', encoding='utf-8')
+
+        def selection(report):
+            return [item for item in report['items'] if item['name'] in ('review-notes', 'review-job', 'protected-notes')]
+
+        write_sources('first')
+        report = self.post('scan', {})
+        original_ids = [item['id'] for item in selection(report)]
+        self.assertEqual(len(original_ids), 3)
+        result = self.post('scan/import', {'ticket': report['ticket'], 'ids': original_ids})
+        self.assertEqual(result['imported'], original_ids)
+
+        for name in ('mcp_endpoint.py', 'calllog.py', 'packs.py', 'store.py', 'portable.py'):
+            shutil.copyfile(REPO / name, self.root / name)
+        shutil.copytree(REPO / 'checks', self.root / 'checks')
+        client = self.enterContext(subprocess.Popen(
+            [sys.executable, '-B', str(self.root / 'mcp_endpoint.py')],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8'))
+
+        def rpc(identity, method, params):
+            client.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': identity, 'method': method, 'params': params}) + '\n')
+            client.stdin.flush()
+            message = json.loads(client.stdout.readline())
+            self.assertEqual(message['id'], identity)
+            return message['result']
+
+        self.assertIn('tools', rpc(1, 'initialize', {'protocolVersion': '2025-03-26'})['capabilities'])
+
+        def get_item(identity, kind, name):
+            result = rpc(identity, 'tools/call', {'name': 'hub_get_item', 'arguments': {'kind': kind, 'name': name}})
+            return json.loads(result['content'][0]['text'])['files']
+
+        self.assertIn('Take first notes.', next(iter(get_item(2, 'skill', 'review-notes').values())))
+        self.assertIn('[Service]\nExecStart=/bin/echo first\n', get_item(3, 'routine', 'review-job').values())
+
+        local_edit = self.local / 'skills/protected-notes/SKILL.md'
+        local_edit.write_text('Independent catalog edit.\n', encoding='utf-8')
+        write_sources('second')
+        report = self.post('scan', {})
+        items = {item['name']: item for item in selection(report)}
+        candidates = [items[name] for name in ('review-notes', 'review-job')]
+        self.assertTrue(all(item['updatable'] for item in candidates))
+        ids = [item['id'] for item in candidates]
+        self.assertTrue(set(ids).isdisjoint(original_ids))
+        conflict = items['protected-notes']
+        self.assertEqual(conflict['status'], 'conflict')
+        self.assertFalse(conflict.get('updatable'))
+        self.assertEqual(self.request('/api/scan/import', {'ticket': report['ticket'], 'ids': [conflict['id']]})[0], 400)
+        prompt = self.local / 'routines/review-job/prompt.md'
+        self.assertIn('first', prompt.read_text(encoding='utf-8'))
+        result = self.post('scan/import', {'ticket': report['ticket'], 'ids': ids})
+        self.assertCountEqual(result['updated'], ids)
+        self.assertEqual(result['imported'], [])
+        self.assertEqual(result['rejected'], [])
+        self.assertEqual(local_edit.read_text(encoding='utf-8'), 'Independent catalog edit.\n')
+        self.assertIn('Take second notes.', next(iter(get_item(4, 'skill', 'review-notes').values())))
+        self.assertIn('[Service]\nExecStart=/bin/echo second\n', get_item(5, 'routine', 'review-job').values())
+        self.assertFalse(json.loads((prompt.parent / 'routine.json').read_text(encoding='utf-8'))['enabled'])
+
+    def test_scan_update_preflight_preserves_a_prompt_edited_after_rescan(self):
+        units = self.home / '.config/systemd/user'
+        units.mkdir(parents=True, exist_ok=True)
+        service = units / 'review-job.service'
+        service.with_suffix('.timer').write_text('[Timer]\nOnCalendar=daily\n', encoding='utf-8')
+        service.write_text('[Service]\nExecStart=/bin/echo first\n', encoding='utf-8')
+        report = self.post('scan', {})
+        item = next(item for item in report['items'] if item['name'] == 'review-job')
+        self.post('scan/import', {'ticket': report['ticket'], 'ids': [item['id']]})
+        service.write_text('[Service]\nExecStart=/bin/echo second\n', encoding='utf-8')
+        report = self.post('scan', {})
+        item = next(item for item in report['items'] if item['name'] == 'review-job')
+        self.assertTrue(item['updatable'])
+        prompt = self.local / 'routines/review-job/prompt.md'
+        original_import = hub.import_item
+
+        def independently_edit(args, root):
+            prompt.write_text('Independent prompt edit.\n', encoding='utf-8')
+            return original_import(args, root)
+
+        with patch.object(hub, 'import_item', side_effect=independently_edit) as importer:
+            result = self.post('scan/import', {'ticket': report['ticket'], 'ids': [item['id']]})
+        self.assertEqual(importer.call_count, 1)
+        self.assertEqual(result['updated'], [])
+        self.assertEqual(result['rejected'], [item['id']])
+        self.assertEqual(prompt.read_text(encoding='utf-8'), 'Independent prompt edit.\n')
 
     def test_crontab_routine_item_carries_runner_schedule_and_timezone(self):
         self.server.scan_env = {'TZ': 'America/Chicago'}

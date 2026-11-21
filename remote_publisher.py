@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import hashlib
+from itertools import chain
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ import urllib.error
 import urllib.request
 
 from checks import validators
-from checks.scan import findings
+from checks.scan import findings, json_strings, screen_private_patterns
 import mcp_endpoint
 import packs
 from store import FileStore, ordinary_path
@@ -202,6 +203,8 @@ def build(root, include_local=False):
              for collection, key in validators.COLLECTIONS.items()}
     index = {"schema": SCHEMA, "revision": "", "kinds": kinds}
     index["revision"] = hashlib.sha256(canonical(index).encode()).hexdigest()[:20]
+    if include_local:
+        screen_private_patterns(root, chain((canonical(index),), json_strings(index), blobs.values()))
     return Artifact(index["revision"], index, blobs)
 
 

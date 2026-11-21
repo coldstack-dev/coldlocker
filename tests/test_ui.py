@@ -50,7 +50,7 @@ class UITests(unittest.TestCase):
             self.assertEqual(Path(name).read_bytes(), content)
 
     def request(self, route, data=None, headers=None, raw=None):
-        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=30)
         self.addCleanup(connection.close)
         supplied = {'Host': '127.0.0.1:' + str(self.server.server_port)}
         if data is not None or raw is not None:

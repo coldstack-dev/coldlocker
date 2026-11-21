@@ -684,10 +684,31 @@ class CommandTests(PublisherCase):
 
     def test_include_local_with_yes_lists_and_uploads_the_local_items(self):
         self.local_hub()
+        write(self.root / ".hub-store/private-patterns.txt", "^unrelated fixture$\n")
         code, text, kv = self.uploaded(yes=True, include_local=True)
         self.assertEqual(code, 0)
         self.assertIn("rules/private-rule  .hub-store/catalog/rules/private-rule.md", text)
         self.assertIn("# Private\nOnly mine.\n", [value for call in kv.calls for value in call.values()])
+
+    def test_include_local_refuses_private_patterns_without_disclosing_them(self):
+        import hub
+
+        self.local_hub()
+        for payload, blocked in (("blob", "only mine."), ("index", "private-rule")):
+            write(self.root / ".hub-store/private-patterns.txt", f"^{blocked}$\n")
+            for flag in ("--dry-run", "--yes"):
+                with self.subTest(payload=payload, mode=flag):
+                    kv, output, errors = FakeKv(), io.StringIO(), io.StringIO()
+                    with patch.object(hub, "ROOT", self.root), \
+                         patch.object(sys, "argv", ["hub.py", "publish-remote", "--include-local", flag]), \
+                         patch.object(remote_publisher, "transport", return_value=kv) as transport, \
+                         redirect_stdout(output), redirect_stderr(errors):
+                        self.assertEqual(hub.main(), 1)
+                    self.assertIn("private-pattern at line", errors.getvalue())
+                    self.assertNotIn(blocked, errors.getvalue().lower())
+                    self.assertEqual(output.getvalue(), "")
+                    transport.assert_not_called()
+                    self.assertEqual(kv.calls, [])
 
     def test_include_local_dry_run_lists_the_items_and_uploads_nothing(self):
         self.local_hub()

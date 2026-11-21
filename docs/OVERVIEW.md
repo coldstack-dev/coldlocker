@@ -4,9 +4,8 @@ Coldlocker keeps your skills, rules, routines and MCP server definitions in one
 local catalog that every agent can reach. For the commands, start with the
 [README](../README.md).
 
-The goal, from the [vision](../VISION.md): make it stupid simple to import all
-skills, routines, MCP servers, connections and plugins, then have them reachable
-from any agent.
+The goal is to set up your skills, routines and connections once and make them
+available from each compatible agent.
 
 - **One locker.** Everything lives in one repository-shaped folder with one index.
 - **Agents first.** An agent finds everything from the repo root through
@@ -147,6 +146,14 @@ against temporary fixture homes. CI and acceptance details are in
 - References, not secret values.
 - Live upstream over copy; one owner per item; provenance recorded on import.
 - Private until a human approves release.
+
+## Core and policy split
+
+The core library scans, imports, stores and serves catalog items. It also
+includes client setup, the gateway and routine commands. The optional owner
+policy pack provides hook-driven lessons, session modes, model routing and
+command checks. The public export contains the core library and
+[documentation for the optional hooks](hooks.md).
 
 ## Limits
 

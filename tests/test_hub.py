@@ -371,6 +371,14 @@ class StubTests(HubCase):
         self.assertEqual(json.loads((self.local / "mcp/servers/sample-server.json").read_text(encoding="utf-8")), value)
         self.assertEqual(len(self.manifest()["mcp_servers"]), 1)
 
+    def test_secret_reference_in_args_warns_about_process_list(self):
+        value = {**self.mcp_input(), "args": ["--token=secret://sample-arg"]}
+        output = self.cli("import-mcp", self.write("input.json", value))
+        self.assertIn("WARNING: secret-in-args", output)
+        self.assertIn("process list", output)
+        self.assertIn("env", output)
+        self.assertNotIn("WARNING", self.cli("import-mcp", self.write("input.json", self.mcp_input())))
+
     def test_sensitive_key_requires_reference(self):
         value = self.mcp_input()
         value["env"]["API_TOKEN"] = "ordinary-value"

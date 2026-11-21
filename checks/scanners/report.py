@@ -83,7 +83,7 @@ class ReportMixin:
             payload, _ = self.payloads[item['id']]
             if item['importable'] and item['kind'] in ('skill', *MARKDOWN, 'routine', 'plugin', 'connection'):
                 if isinstance(payload, Path):
-                    content = b''.join(read(p) for p in self.walk(payload, limit=1001)).decode('utf-8', errors='replace')
+                    content = b''.join(read(p) for p in self.walk(payload, limit=1001, report_depth=False)).decode('utf-8', errors='replace')
                 elif isinstance(payload, bytes):
                     content = payload.decode('utf-8', errors='replace')
                 else:

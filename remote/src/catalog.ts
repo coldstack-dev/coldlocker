@@ -129,7 +129,7 @@ export function itemListing(index: Index, kind: ItemKind, name: string): Listing
     const main = `${entry.path}/SKILL.md`;
     if (!files.some((file) => file.path === main)) throw new HubError(-32603, `Unreadable file: ${main}`);
     files.sort((left, right) => Number(left.path !== main) - Number(right.path !== main) || codeOrder(left.path, right.path));
-  } else if (files.length === 0) {
+  } else if (files.length === 0 && !entry.omitted?.some((file) => file.reason === "size-cap")) {
     throw new HubError(-32603, `Unreadable file: ${entry.path}`);
   }
   return { entry, files };

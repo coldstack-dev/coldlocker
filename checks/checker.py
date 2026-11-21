@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from portable import product_env
 from checks.scan import scan
@@ -79,28 +80,69 @@ def check_scan(root):
     require(not errors, "\n".join(errors))
 
 
-MARKDOWN_LINK = re.compile(r"\]\(<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\)|^ {0,3}\[[^\]]+\]:\s*<?([^\s>]+)", re.M)
+MARKDOWN_LINK = re.compile(r"\]\(<?([^)\s>]+)>?(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)|^ {0,3}\[[^\]]+\]:\s*<?([^\s>]+)"
+                           r"|<a\s[^>]*?href=[\"']([^\"']+)[\"']", re.M | re.I)
+EXPORT_LINK_DOCS = (
+    "README.md", "docs/install.md", "docs/upgrade.md", "docs/OVERVIEW.md",
+    "docs/reference.md", "docs/clients.md", "docs/capability-matrix.md",
+)
 
 
-def missing_doc_links(root):
+def without_code(text):
+    return re.sub(r"(```|~~~).*?\1|`[^`\n]*`", "", text, flags=re.S)
+
+
+def heading_anchors(text):
+    anchors, seen = set(), {}
+    for heading in re.findall(r"^#+ (.+)$", without_code(text), re.M):
+        slug = re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        anchors.add(f"{slug}-{count}" if count else slug)
+    return anchors
+
+
+def missing_doc_links(root, *, exported=False):
+    root = root.resolve()
     pack_absent = not (root / POLICY_PACK).is_file()
     missing = []
-    for document in sorted([*root.glob("*.md"), *root.glob("docs/**/*.md")]):
-        text = re.sub(r"(```|~~~).*?\1|`[^`\n]*`", "", document.read_text(encoding="utf-8"), flags=re.S)
-        for inline, reference in MARKDOWN_LINK.findall(text):
-            target = inline or reference
-            path = target.split("#", 1)[0]
-            if not path or re.match(r"[a-z][a-z0-9+.-]*:", path, re.I):
-                continue
-            target_path = (document.parent / path).resolve()
-            in_pack = target_path.is_relative_to(root.resolve()) and policy_file(target_path.relative_to(root.resolve()).as_posix())
-            if not target_path.exists() and not (pack_absent and in_pack):
+    if exported:
+        selected = set((root / "public-export.txt").read_text(encoding="utf-8").splitlines())
+        documents = [root / name for name in EXPORT_LINK_DOCS if name in selected and (root / name).is_file()]
+        missing.extend(f"{name} (export document)" for name in EXPORT_LINK_DOCS if root / name not in documents)
+    else:
+        documents = sorted([*root.glob("*.md"), *root.glob("docs/**/*.md")])
+    for document in documents:
+        text = without_code(document.read_text(encoding="utf-8"))
+        for groups in MARKDOWN_LINK.findall(text):
+            target = next(group for group in groups if group)
+            if exported:
+                url = urlsplit(target)
+                if url.scheme or url.netloc:
+                    continue
+                target_path = (document.parent / unquote(url.path)).resolve() if url.path else document
+                relative = target_path.relative_to(root).as_posix() if target_path.is_relative_to(root) else None
+                valid = relative is not None and (
+                    (relative in selected and target_path.is_file())
+                    or (target_path.is_dir() and any(name.startswith(relative + "/") for name in selected)))
+                if valid and url.fragment and target_path.suffix == ".md":
+                    valid = unquote(url.fragment) in heading_anchors(target_path.read_text(encoding="utf-8"))
+            else:
+                path = target.split("#", 1)[0]
+                if not path or re.match(r"[a-z][a-z0-9+.-]*:", path, re.I):
+                    continue
+                target_path = (document.parent / path).resolve()
+                in_pack = target_path.is_relative_to(root) and policy_file(target_path.relative_to(root).as_posix())
+                valid = target_path.exists() or (pack_absent and in_pack)
+            if not valid:
                 missing.append(f"{document.relative_to(root).as_posix()} -> {target}")
     return missing
 
 
 def check_doc_links(root):
     missing = missing_doc_links(root)
+    if (root / "public-export.txt").is_file():
+        missing.extend(missing_doc_links(root, exported=True))
     require(not missing, "missing link targets: " + ", ".join(missing))
 
 

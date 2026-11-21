@@ -27,13 +27,19 @@ Apply re-scans and resolves IDs internally, refuses unindexed destination collis
 
 ## Update
 
-After you edit a skill, rule, subagent, command, routine prompt or MCP definition in its agent, run one command:
+Edit the original source, then scan again. Setup marks eligible rows **Update available** and leaves them unchecked. Review the source file shown in each row, select the updates you want, and confirm.
+
+In the CLI, run `python3 hub.py scan` to preview changes and find their current `sc-…` IDs. Review the source files, then pass only the IDs you want to update:
 
 ```sh
-python3 hub.py scan --import --update --yes
+python3 hub.py scan --import --update --only sc-0123456789ab
 ```
 
-`--update` also re-imports every `conflict` that `scan --import` brought in from the same source path and whose locker copy is unchanged since import. Scan import records each item's source path and home, and a routine's prompt hash, in the private `.hub-store/scan-sources.json`. It also records them for unchanged items already in the locker with the same `scan-<agent>` origin, so items imported by an older version can update after one `scan --import` while their source is unchanged. It prints `Updated <kind> <name> from <source>` for each one and lists them under `updated` in the JSON result. It leaves these as conflicts: an item from a different source path than the one recorded (or with no record, such as one imported with `import-<kind>`), an item found under a `--project` folder or outside the home, a locker copy from another origin, a locker copy edited after import (its file or routine prompt no longer matches the recorded hash), a name shared by agents with different content, and a change with a high safety finding. Every update keeps the replaced copy under `.hub-store/history/<collection>/<name>/<time>/`. The preview prints how many items `--update` would update.
+Add `--yes` after review if you run the command non-interactively. To include all eligible updates and new imports, omit `--only`.
+
+An update requires the same recorded source and an unchanged catalog copy. An independent edit to the catalog file or routine prompt stays protected. A change with a high safety finding or a competing source stays a conflict. Scan records the source path and home in the private `.hub-store/scan-sources.json`. If an older scan import has no record, `scan --import` can record it while the original and catalog copy still match and the origin is the same. For a manually imported item, use its import command with the same owner and origin.
+
+Successful updates appear under `updated` in the result, and replaced content goes to `.hub-store/history/<collection>/<name>/<time>/`. Updated routines remain disabled.
 
 ## Options
 
@@ -81,7 +87,7 @@ A server key is lowercased and non-alphanumeric runs become `-` (`node_repl` bec
 
 Agent homes without an importer are listed by name and `~` path, never read. `scan` and `scan --json` (`not_scanned.agents`, each `{name, path}`, plus `not_scanned.next_step`) name each that exists under the selected home: `~/.grok` (only skills, routines, exports and plugins are read), `~/.antigravity`, `~/.opencodex`, `~/.pi`, `~/.copilot`, `~/.cagent`. The list is `NOT_SCANNED` in `checks/scanners/common.py`. Import their content by hand with `python3 hub.py import-skill <SKILL_DIR>` or `python3 hub.py import-rule <RULE_MD>`.
 
-Bounded discovery skips `.git`, `.worktrees`, `.trash`, `node_modules` and symlinks. Each directory walk visits at most 5,000 entries; when the bound truncates discovery, `scan` and `scan --json` report an `incomplete_inventory` entry with its sanitized source and limit, and the human report says which folder to narrow. Importer limits apply: 1 MiB per file, at most 1,000 package files, no total-size cap (same as `import-skill`).
+Bounded discovery skips `.git`, `.worktrees`, `.trash`, `node_modules` and symlinks. Directory walks visit at most 5,000 entries. Recursive discovery also caps depth based on the source. Depth cutoffs inside skills and plugins already found are expected. When a limit truncates discovery, the CLI and setup wizard report which folder to narrow. In `scan --json`, each `incomplete_inventory` entry includes the sanitized source and limit. Depth warnings also include a `reason` and `next_step`. Importer limits are 1 MiB per file and at most 1,000 package files with no total-size cap, as in `import-skill`.
 
 ## Schedules
 

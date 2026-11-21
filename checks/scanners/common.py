@@ -102,9 +102,27 @@ def tree_hash(path):
     return digest(''.join(f'{name}\0{sha}\n' for name, sha in sorted(entries)).encode())
 
 
-def walk(base, depth=8, limit=5000, on_limit=None):
+def has_walk_entries(directory):
+    try:
+        with os.scandir(selected_path(directory)) as stream:
+            return any(
+                entry.name not in EXCLUDE
+                and (entry.is_dir(follow_symlinks=False) or entry.is_file(follow_symlinks=False))
+                for entry in stream
+            )
+    except ERRORS:
+        return True
+
+
+def plugin_manifest(path, agent):
+    return path.name == 'plugin.json' and (agent == 'grok' or path.parent.name in ('.codex-plugin', '.claude-plugin'))
+
+
+def walk(base, depth=8, limit=5000, on_limit=None, *, report_depth=True, package_agent=None):
     pending = [(base, 0)]
     visited = 0
+    cutoffs = []
+    package_roots = set()
     while pending:
         directory, level = pending.pop()
         try:
@@ -121,15 +139,28 @@ def walk(base, depth=8, limit=5000, on_limit=None):
             for entry in entries:
                 if entry.name in EXCLUDE or entry.is_symlink():
                     continue
-                if entry.is_dir(follow_symlinks=False) and level < depth:
-                    pending.append((Path(entry.path), level + 1))
+                if entry.is_dir(follow_symlinks=False):
+                    if level < depth:
+                        pending.append((Path(entry.path), level + 1))
+                    elif report_depth and on_limit:
+                        cutoffs.append(Path(entry.path))
                 elif entry.is_file(follow_symlinks=False):
-                    yield Path(entry.path)
+                    path = Path(entry.path)
+                    if package_agent:
+                        if path.name == 'SKILL.md':
+                            package_roots.add(directory)
+                        elif plugin_manifest(path, package_agent):
+                            package_roots.add(directory if directory.name not in ('.codex-plugin', '.claude-plugin') else directory.parent)
+                    yield path
         except ERRORS:
             continue
         if pending and visited >= limit:
             if on_limit:
                 on_limit(base, limit)
+            break
+    for directory in cutoffs:
+        if package_roots.isdisjoint(directory.parents) and has_walk_entries(directory):
+            on_limit(base, depth, f'reached the depth limit of {depth}')
             break
 
 
@@ -194,8 +225,8 @@ def texts(payload, name='item'):
     return []
 
 
-def markdown_files(inv, agent, root, kind, depth=8):
-    for path in inv.walk(root, depth=depth):
+def markdown_files(inv, agent, root, kind, depth=8, *, report_depth=True):
+    for path in inv.walk(root, depth=depth, report_depth=report_depth):
         if path.suffix == '.md':
             inv.rule(agent, path, '-'.join(path.relative_to(root).with_suffix('').parts), kind)
 

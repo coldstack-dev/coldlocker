@@ -51,5 +51,13 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('welcome-discovery').hidden, false);
   assert.equal(get('welcome-health-panel').hidden, false, 'Health shows once a result exists');
   assert.equal(get('welcome-health').textContent.includes('hub.py'), false, 'healthy copy has no command name');
+  assert.equal(get('welcome-lede').children.length, 0);
+  replies.scan.incomplete_inventory = [{
+    source: '~/.claude/skills', limit: 5, reason: 'reached the depth limit of 5',
+    next_step: 'Narrow that folder and scan again.',
+  }];
+  await vm.runInContext('render({api, state})', context);
+  assert.equal(get('welcome-lede').children[0].textContent.trim(),
+    'Incomplete inventory: ~/.claude/skills reached the depth limit of 5. Narrow that folder and scan again.');
   console.log('Welcome: scanning state shown and Import all disabled until /api/scan returns.');
 })().catch(error => { console.error(error); process.exit(1); });

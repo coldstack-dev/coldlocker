@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import connect
+import scanner
 import gateway_render
 from store import FileStore
 import hub
@@ -696,7 +697,8 @@ class ConnectTests(unittest.TestCase):
             expected = 'Undo: cp ' + shlex.quote(str(backups[0])) + ' ' + shlex.quote(str(path))
         self.assertEqual(lines[0], expected)
         path.write_bytes(b'changed after connect\n')
-        subprocess.run(lines[0][len('Undo: '):], shell=True, check=True)
+        undo = lines[0][len('Undo: '):]
+        subprocess.run(undo if sys.platform.startswith('win') else shlex.split(undo), check=True)
         self.assertEqual(path.read_bytes(), original)
 
     def test_write_prints_cmd_compatible_undo_on_windows(self):
@@ -1069,6 +1071,11 @@ class RetireDirectTests(unittest.TestCase):
                               '[mcp_servers.other]\ncommand = "keep"\n')
         self.originals = {self.claude: self.claude.read_bytes(), self.codex: self.codex.read_bytes()}
         self.output = io.StringIO()
+        identical = {(self.claude, 'beacon'), (self.claude, 'planning-center'), (self.codex, 'pushpay-docs'), (self.codex, 'jev')}
+        scan = patch('connect.identical_imports', side_effect=lambda root, home, platform, env, served, path, agent, group:
+                     {name for where, name in identical if where == path and name in served})
+        scan.start()
+        self.addCleanup(scan.stop)
 
     def gateway(self):
         url = 'http://127.0.0.1:43871/mcp'
@@ -1148,14 +1155,6 @@ class RetireDirectTests(unittest.TestCase):
         self.assertIn('planning-center', json.loads(self.claude.read_text(encoding='utf-8'))['mcpServers'])
         self.assertNotIn('remove direct entries', self.output.getvalue())
 
-    def test_only_codex_names_are_normalized(self):
-        value = json.loads(self.claude.read_text(encoding='utf-8'))
-        value['mcpServers']['pushpay_docs'] = value['mcpServers'].pop('beacon')
-        self.claude.write_text(json.dumps(value, indent=2) + '\n')
-        self.assertEqual(self.run_connect(yes=True), 0)
-        self.assertIn('pushpay_docs', json.loads(self.claude.read_text(encoding='utf-8'))['mcpServers'])
-        self.assertNotIn('pushpay_docs', connect.toml(self.codex.read_text(encoding='utf-8'))['mcp_servers'])
-
     def test_token_gateway_needs_the_matching_client_token(self):
         class Store:
             def __init__(self, root):
@@ -1219,6 +1218,74 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class RetireImportedTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        self.root = base / 'locker'
+        self.root.mkdir()
+        for name in ('manifest.json', 'LICENSE', '.gitignore'):
+            shutil.copyfile(ROOT / name, self.root / name)
+        for folder in ('skills', 'rules', 'routines', 'mcp', 'config'):
+            if (ROOT / folder).is_dir():
+                shutil.copytree(ROOT / folder, self.root / folder)
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        self.home = base / 'home'
+        (self.home / '.codex').mkdir(parents=True)
+        self.claude = self.home / '.claude.json'
+        self.codex = self.home / '.codex/config.toml'
+        self.claude.write_text(json.dumps({
+            'mcpServers': {'My_Server': {'command': 'mine', 'env': {'MODE': 'a'}}, 'beacon': {'command': 'beacon'},
+                           'plain': {'command': 'plain'}, 'web': {'type': 'http', 'url': 'https://web.example.test/mcp'}},
+            'projects': {'/work': {'mcpServers': {'foo': {'command': 'project-foo'}}}}}), encoding='utf-8')
+        report = scanner.Inventory(self.home, (), 'linux', {}, lambda command: '', self.root).discover()
+        chosen = [item['id'] for item in report['items'] if item['kind'] == 'mcp_server' and item['name'] != 'web']
+        result = scanner.apply(self.root, report, chosen, FileStore(self.root), self.home, platform='linux', env={},
+                               runner=lambda command: '')
+        self.assertEqual(result['counts'], {'imported': 4, 'rejected': 0})
+        web = base / 'web.json'
+        web.write_text(json.dumps({'name': 'web', 'description': 'Imported server', 'transport': 'http',
+                                   'url': 'https://web.example.test/mcp'}), encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            hub.import_item(SimpleNamespace(command='import-mcp', path=str(web), owner=None, origin=None,
+                                            approve_risky=True), self.root)
+        value = json.loads(self.claude.read_text(encoding='utf-8'))
+        value['mcpServers']['foo'] = {'command': 'user-foo'}
+        self.claude.write_text(json.dumps(value), encoding='utf-8')
+        self.codex.write_text('[mcp_servers.my_server]\ncommand = "mine"\n\n[mcp_servers.my_server.env]\nMODE = "b"\n\n'
+                              '[mcp_servers.beacon]\ncommand = "codex-beacon"\n\n[mcp_servers.plain]\ncommand = "plain"\n')
+        self.xdg = base / 'external-config'
+        self.opencode = self.xdg / 'opencode/opencode.json'
+        self.opencode.parent.mkdir(parents=True)
+        self.opencode.write_text(json.dumps({'mcp': {'beacon': {'type': 'local', 'command': ['opencode-beacon']},
+                                                     'plain': {'type': 'local', 'command': ['plain']}}}), encoding='utf-8')
+        self.output = io.StringIO()
+
+    def test_only_the_imported_definition_is_retired(self):
+        url = 'http://127.0.0.1:43871/mcp'
+        gateway = {'status': 'running', 'snippets': {
+            'Claude': json.dumps({'mcpServers': {'coldlocker-gateway': {'type': 'http', 'url': url}}}),
+            'Cursor': json.dumps({'mcpServers': {'coldlocker-gateway': {'url': url}}}),
+            'Codex': '[mcp_servers.coldlocker-gateway]\nurl = ' + json.dumps(url) + '\n'}}
+        args = SimpleNamespace(home=str(self.home), platform='linux', agent=['claude', 'codex', 'opencode'], write=True,
+                               yes=True, retire_direct=True)
+        with patch('connect.gateway_connection', return_value=gateway), \
+                patch('hub_ui.gateway_connection', return_value={'up': ['beacon', 'foo', 'my-server', 'plain', 'web']}):
+            self.assertEqual(connect.run(args, self.root, env={'XDG_CONFIG_HOME': str(self.xdg)}, stdin=io.StringIO(),
+                                         output=self.output), 0)
+        claude = json.loads(self.claude.read_text(encoding='utf-8'))
+        self.assertEqual(sorted(claude['mcpServers']), ['coldlocker', 'coldlocker-gateway', 'foo'])
+        self.assertEqual(claude['projects']['/work']['mcpServers'], {'foo': {'command': 'project-foo'}})
+        codex = connect.toml(self.codex.read_text(encoding='utf-8'))['mcp_servers']
+        self.assertEqual(sorted(codex), ['beacon', 'coldlocker', 'coldlocker-gateway', 'my_server'])
+        self.assertEqual(codex['beacon'], {'command': 'codex-beacon'})
+        self.assertEqual(codex['my_server']['env'], {'MODE': 'b'})
+        opencode = json.loads(self.opencode.read_text(encoding='utf-8'))['mcp']
+        self.assertEqual(opencode['beacon'], {'type': 'local', 'command': ['opencode-beacon']})
+        self.assertNotIn('plain', opencode)
+
+
 class ImportedServerReachTests(unittest.TestCase):
     STOPPED = {'status': 'stopped', 'command': 'python3 gateway.py prepare && python3 gateway.py start', 'snippets': {}}
 
@@ -1262,6 +1329,8 @@ class ImportedServerReachTests(unittest.TestCase):
         printed = self.output.getvalue()
         self.assertIn('Imported MCP servers (fetchy, remote-docs) reach other agents only through the gateway', printed)
         self.assertIn('gateway.py install && python3 gateway.py prepare && python3 gateway.py start', printed)
+        self.assertIn('Use the coldlocker entry to browse the catalog while the gateway is stopped.', printed)
+        self.assertIn('coldlocker', connect.toml(self.codex.read_text(encoding='utf-8'))['mcp_servers'])
         self.assertNotIn('fetchy', connect.toml(self.codex.read_text(encoding='utf-8'))['mcp_servers'])
 
     def test_running_gateway_needs_no_offer(self):

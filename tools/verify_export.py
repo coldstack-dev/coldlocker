@@ -36,6 +36,8 @@ def main():
         print('SKIP: dogfood source-copy replay requires Git checkout metadata', flush=True)
     commands.append([sys.executable, '-B', '-m', 'unittest', 'discover', '-s', 'tests',
                      '-p', 'test_public_export.py', '-k', 'test_export_contains_existing'])
+    commands.append([sys.executable, '-B', '-m', 'unittest', 'discover', '-s', 'tests',
+                     '-p', 'test_readme.py', '-k', 'test_exported_quickstart'])
     for command in commands:
         subprocess.run(command, cwd=ROOT, check=True)
     print('PASS: public export health, safety, MCP endpoint, catalog experiment, runtime proofs and available dogfood replay', flush=True)

@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 from pathlib import Path
@@ -16,6 +18,7 @@ from urllib.parse import urlsplit
 
 import safety
 from checks import checker, validators
+from client_paths import codex_home
 from gateway_render import PATH_BINDINGS, _read_bindings, _references, store_source_path_bindings
 from importers import skill_package, skill_package_texts
 import lifecycle
@@ -67,11 +70,13 @@ def record(value, collection, item_name, destination, owner, origin, root=ROOT):
     print(f"Recorded {collection}: {item_name}")
 
 
-def import_manifest(value, collection, item_name, relative, owner, origin, checksum):
+def import_manifest(value, collection, item_name, relative, owner, origin, checksum, prompt_checksum=None):
     key = validators.COLLECTIONS[collection]
     entry = {key: item_name, "path": relative,
              "owner": owner, "provenance": {"source_id": f"src-{checksum[:12]}", "origin": origin},
              "sha256": checksum}
+    if prompt_checksum:
+        entry["prompt_sha256"] = prompt_checksum
     entries = [item for item in value.get(collection, []) if item[key] != item_name] + [entry]
     return validators.manifest({**value, collection: sorted(entries, key=lambda item: item[key])})
 
@@ -471,6 +476,8 @@ def import_item(args, root=ROOT):
     validators.require(source.resolve() not in destination.resolve().parents, "input contains destination")
     snapshots[destination] = import_snapshot(destination)
     entry = import_preflight(value, collection, item_name, destination, relative, owner, origin, kind)
+    validators.require(entry is not None or not getattr(args, "require_existing", False),
+                       "scan update requires an existing catalog entry")
     if prompt:
         target = destination.parent / prompt.name
         ordinary_file(target)
@@ -478,6 +485,13 @@ def import_item(args, root=ROOT):
         validators.require(not target.exists() or
                            (entry is not None and read_json(destination).get("prompt") == prompt.name),
                            "unindexed prompt destination exists")
+        if entry is not None:
+            current = destination.parent / read_json(destination)["prompt"]
+            ordinary_file(current)
+            known = {entry.get("prompt_sha256"), hashlib.sha256(stored.encode("utf-8")).hexdigest()}
+            validators.require(not current.exists() or validators.digest(current) in known,
+                               f"routine prompt differs from its recorded hash; copy {current.name} out of the "
+                               f"locker to keep your changes, then remove routine {item_name} and import it again")
     packs.pin(root)
     with tempfile.TemporaryDirectory() as temporary:
         staged_root = Path(temporary)
@@ -495,7 +509,8 @@ def import_item(args, root=ROOT):
             staged_prompt.write_bytes(stored.encode("utf-8"))
             operations.append((destination.parent / prompt.name, staged_prompt))
         previous = changed_targets(operations)
-        updated = import_manifest(value, collection, item_name, relative, owner, origin, validators.digest(staged))
+        updated = import_manifest(value, collection, item_name, relative, owner, origin, validators.digest(staged),
+                                  validators.digest(staged_prompt) if prompt else None)
         staged_manifest = staged_root / "catalog" / "manifest.json"
         write_json(staged_manifest, updated)
         if kind == "mcp":
@@ -817,6 +832,9 @@ def deliver_rules(args):
             import runpy
             validate_lesson = runpy.run_path(str(Path(__file__).resolve().parent / "skills/verify-loop/verify_loop.py"))["lesson_check"]
             validators.require(validate_lesson(text.replace("\r\n", "\n")) is not None, "retired lessons are not delivered")
+            if folder := os.environ.get("COLDLOCKER_LESSONS"):
+                from hooks.coldlocker_hook import lessons_held_back
+                validators.require(not lessons_held_back(Path(folder), target), "lessons are held back for this repository")
             if not marked:
                 content = marker.encode("utf-8") + content
         destination = directory / (name + ".md")
@@ -916,18 +934,18 @@ HOOK_PROBES = (
      "Dispatch requires readable coldlocker-role metadata"),
     ("ordinary command is allowed", "Bash", {"command": "git status"}, None),
 )
+HOOK_IN_FORCE_COMMAND = "false && git push coldlocker-hook-probe-invalid HEAD:refs/heads/hook-probe"
+CODEX_RETRUST = "Open /hooks in Codex, review and trust the Coldlocker PreToolUse hook, then start a fresh session."
 
 
 def git_in(root, *command):
     return subprocess.run(["git", "-C", str(root), *command], capture_output=True, text=True, encoding="utf-8")
 
 
-def probe_passes(root, env, tool, tool_input, reason):
-    payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+def probe_passes(command, env, payload, reason, *, cwd=None):
     try:
-        result = subprocess.run([sys.executable, "-I", str(root / "hooks/coldlocker_hook.py"), "--root", str(root)],
-                                input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8",
-                                timeout=60, env=env)
+        result = subprocess.run(command, input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8",
+                                timeout=60, env=env, cwd=cwd)
         output = json.loads(result.stdout).get("hookSpecificOutput", {})
         if reason is None:
             return result.returncode == 0 and "permissionDecision" not in output
@@ -939,10 +957,12 @@ def probe_passes(root, env, tool, tool_input, reason):
 
 def hook_self_test(root):
     passed = True
+    command = [sys.executable, "-I", str(root / "hooks/coldlocker_hook.py"), "--root", str(root)]
     with tempfile.TemporaryDirectory() as home:
         env = {**os.environ, "HOME": home, "USERPROFILE": home, "PYTHONDONTWRITEBYTECODE": "1"}
         for title, tool, tool_input, reason in HOOK_PROBES:
-            ok = probe_passes(root, env, tool, tool_input, reason)
+            payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+            ok = probe_passes(command, env, payload, reason)
             print(("PASS" if ok else "FAIL") + ": hook self-test: " + title)
             passed = passed and ok
         expected = Path(home) / ".local/state/coldlocker/decisions.jsonl"
@@ -993,6 +1013,171 @@ def installed_hook_lessons():
             print(f"WARN: {client_of(path)} hook lessons configuration could not be read")
 
 
+async def codex_hook_records(root, config, scratch):
+    shadow = scratch / "codex"
+    shadow.mkdir()
+    source = config / "hooks.json"
+    shutil.copyfile(source, shadow / source.name)
+    settings = config / "config.toml"
+    options = tomllib.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+    state = options.get("hooks", {}).get("state", {})
+    source_key = f"{config.resolve() / source.name}:"
+    shadow_key = f"{shadow.resolve() / source.name}:"
+    lines = []
+    validators.require(options.get("features", {}).get("hooks") is not False,
+                       "Codex hooks are disabled in config.toml. Enable hooks, then check /hooks in Codex.")
+    for key, entry in state.items():
+        path_key = key.removeprefix("file:")
+        if not path_key.startswith(source_key):
+            continue
+        prefix = "file:" if key != path_key else ""
+        mapped = json.dumps(prefix + shadow_key + path_key[len(source_key):], ensure_ascii=False)
+        lines.append(f"[hooks.state.{mapped}]")
+        for field, kind in (("enabled", bool), ("trusted_hash", str), ("trusted_content_hash", str)):
+            if field in entry:
+                validators.require(isinstance(entry[field], kind), "invalid Codex hook trust state")
+                lines.append(f"{field} = {json.dumps(entry[field], ensure_ascii=False)}")
+    (shadow / "config.toml").write_text("\n".join(lines), encoding="utf-8")
+    process = await asyncio.create_subprocess_exec(
+        "codex", "app-server", "-c", "log_dir=" + json.dumps(scratch.as_posix()),
+        cwd=root, env={**os.environ, "HOME": str(scratch), "USERPROFILE": str(scratch),
+                       "CODEX_HOME": str(shadow), "CODEX_SQLITE_HOME": str(shadow)},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, limit=1024 * 1024,
+    )
+
+    async def request(method, params, request_id):
+        message = {"method": method}
+        if request_id is not None:
+            message.update(id=request_id, params=params)
+        process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+        await process.stdin.drain()
+        if request_id is not None:
+            while line := await process.stdout.readline():
+                reply = json.loads(line)
+                if reply.get("id") == request_id:
+                    return reply["result"]
+            raise ValueError("Codex closed the app-server connection")
+
+    try:
+        async with asyncio.timeout(30):
+            await request("initialize", {"clientInfo": {"name": "coldlocker-doctor", "version": "1"},
+                                         "capabilities": {"experimentalApi": True}}, 1)
+            await request("initialized", {}, None)
+            result = await request("hooks/list", {"cwds": [str(root)]}, 2)
+        listing, = result["data"]
+        if listing.get("errors") or not isinstance(listing["hooks"], list):
+            raise ValueError("Codex hook configuration could not be read")
+        return listing["hooks"]
+    except TimeoutError as error:
+        raise ValueError("Codex app-server hooks/list timed out") from error
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+        raise ValueError("could not read Codex app-server hooks/list") from error
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await process.communicate()
+
+
+def registered_hook_command(command, powershell):
+    from hooks.install import command_args, hook_command
+
+    try:
+        python, *words = command_args(command)
+    except ValueError:
+        return None
+    if os.name != "nt" and words[:1] == ["-I"]:
+        words.pop(0)
+    if not words:
+        return None
+    path = Path(words[0])
+    interpreter = Path(python).name
+    if not (re.fullmatch(r"(?:python|pypy)[\w.-]*", interpreter, re.IGNORECASE)
+            and path.is_absolute() and path.parent.name == "hooks"
+            and path.name in ("coldlocker_hook.py", "fleet_hook.py")):
+        return None
+    args = words[1:]
+    if hook_command(python, powershell, path, args) != command:
+        return None
+    if args[:1] != ["--root"] or len(args) % 2 or len(args) < 2:
+        return None
+    pairs = list(zip(args[::2], args[1::2]))
+    if not all(flag in ("--briefing", "--lessons", "--run") for flag, _ in pairs[1:]):
+        return None
+    return [python, "-I", "-B", str(path),
+            *(value for pair in pairs if pair[0] != "--run" for value in pair)]
+
+
+def hook_in_force(root, client, config):
+    if not (root / validators.POLICY_PACK).is_file():
+        return "policy pack not installed"
+    settings = config / ("settings.json" if client == "claude" else "hooks.json")
+    receipt = any(settings.with_name(f"{settings.name}.{name}-receipt.json").is_file()
+                  for name in ("coldlocker", "fleet"))
+    powershell = client == "codex" and os.name == "nt"
+    try:
+        doc = json.loads(settings.read_text(encoding="utf-8-sig")) if settings.exists() else {}
+        handlers = [(handler, group.get("matcher")) for group in doc.get("hooks", {}).get("PreToolUse", [])
+                    for handler in group.get("hooks", []) if handler.get("type") == "command"]
+        registered = any(registered_hook_command(handler.get("command") or "", powershell)
+                         for handler, _ in handlers)
+    except (AttributeError, TypeError) as error:
+        raise ValueError("invalid hook configuration") from error
+    if not registered and not receipt:
+        return "Coldlocker PreToolUse hook has not been installed"
+    validators.require(registered, "Coldlocker PreToolUse hook is not registered. Run hooks/install.py.")
+
+    with tempfile.TemporaryDirectory(prefix="coldlocker-doctor-") as directory:
+        scratch = Path(directory)
+        try:
+            if client == "codex":
+                records = asyncio.run(codex_hook_records(root, config, scratch))
+                handlers = [(record, record.get("matcher")) for record in records
+                            if record.get("eventName") == "preToolUse" and record.get("handlerType") == "command"]
+            else:
+                validators.require(not doc.get("disableAllHooks"), "Claude hooks are disabled in settings.json")
+        except (AttributeError, TypeError) as error:
+            raise ValueError("invalid hook configuration") from error
+
+        commands = []
+        for handler, matcher in handlers:
+            command = registered_hook_command(handler.get("command") or "", powershell)
+            if command is None:
+                continue
+            if client == "codex":
+                trust = handler.get("trustStatus")
+                validators.require(trust == "trusted",
+                                   f"hook trust is {trust if trust in ('modified', 'untrusted') else 'unknown'}. {CODEX_RETRUST}")
+                validators.require(handler.get("enabled") is True, f"hook is disabled. {CODEX_RETRUST}")
+            try:
+                if matcher not in (None, "", "*") and not re.fullmatch(matcher, "Bash"):
+                    continue
+            except (TypeError, re.error) as error:
+                raise ValueError("invalid Coldlocker PreToolUse matcher") from error
+            if handler.get("async"):
+                continue
+            commands.append(command)
+        validators.require(commands, "Coldlocker PreToolUse hook is not registered for Bash. Run hooks/install.py.")
+
+        env = {**os.environ, "HOME": directory, "USERPROFILE": directory}
+        guards = Path.home() / ".coldlocker" / "guards.json"
+        if not guards.is_symlink() and guards.is_file():
+            probe_guards = scratch / ".coldlocker" / guards.name
+            probe_guards.parent.mkdir()
+            shutil.copyfile(guards, probe_guards)
+        if client == "claude":
+            env["CLAUDE_PROJECT_DIR"] = str(root)
+        else:
+            env.pop("CLAUDE_PROJECT_DIR", None)
+        payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(root),
+                   "tool_input": {"command": HOOK_IN_FORCE_COMMAND}}
+        for command in commands:
+            validators.require(probe_passes(command, env, payload, "Public publication is blocked", cwd=root),
+                               "harmless deny probe did not return the expected denial")
+
+
 def doctor(args):
     result = checker.doctor(ROOT)
     for client, directory in installed_hook_lessons():
@@ -1001,7 +1186,28 @@ def doctor(args):
         else:
             print(f"WARN: {client} hook injects no lessons. "
                   "Reinstall with hooks/install.py … --hook-lessons <DIR>")
-    return result
+    claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    codex = codex_home(Path.home(), platform=sys.platform)
+    hooks = checker.report([
+        ("codex hook in force", lambda: hook_in_force(ROOT, "codex", codex)),
+        ("claude hook in force", lambda: hook_in_force(ROOT, "claude", claude)),
+    ])
+    runtime = ROOT / ".hub-store/gateway"
+    if (runtime / "pid.json").exists():
+        import gateway
+
+        try:
+            current = gateway.state(runtime, checkout=ROOT)
+            if not current:
+                raise ValueError("gateway supervisor unavailable")
+            summary, healthy, warnings = gateway.health_report(ROOT, current["port"], current)
+        except gateway.HEALTH_ERRORS:
+            print("WARN: gateway health and connection totals unavailable")
+        else:
+            print(f"{'PASS' if healthy else 'WARN'}: {summary}")
+            for warning in warnings:
+                print(f"WARN: {warning}")
+    return result or hooks
 
 
 def post_update_checks(had_pack):
@@ -1092,9 +1298,11 @@ def update(args):
 
 
 MODEL_ENTRY = re.compile(r"^([^#\n]+?): \{provider: ([^,]+), model: ([^,]+), effort: ([^}]+)\}$")
+SONNET_REVIEW_ROLE = "reviewer-for-codex-sonnet"
 REVIEW_ROLES = {
     "reviewer": ("reviewer", "auditor/verifier", "second-frontier"),
     "reviewer-for-codex": ("reviewer-for-codex",),
+    SONNET_REVIEW_ROLE: (SONNET_REVIEW_ROLE,),
     "auditor/verifier": ("auditor/verifier", "reviewer", "second-frontier"),
     "auditor-high-stakes": ("auditor-high-stakes",),
     "gate-verifier": ("gate-verifier", "reviewer", "auditor/verifier", "second-frontier"),
@@ -1117,7 +1325,8 @@ def model_route(args):
     if args.role not in routes and args.role not in REVIEW_ROLES:
         return incomplete("unknown role: " + args.role)
     route = routes.get(args.role)
-    if args.builder_model or (args.model_action == "target" and args.role in REVIEW_ROLES):
+    if args.builder_model or (args.role in REVIEW_ROLES
+                              and (args.model_action == "target" or args.role == SONNET_REVIEW_ROLE)):
         if args.role not in REVIEW_ROLES:
             return incomplete("--builder-model applies only to review roles: " + ", ".join(REVIEW_ROLES))
         if not args.builder_model:
@@ -1127,7 +1336,7 @@ def model_route(args):
             model = canonical_model(model)
             return not any(model == b or model.endswith("-" + b) for b in builders)
         candidates = REVIEW_ROLES[args.role]
-        if args.role in ("reviewer", "reviewer-for-codex"):
+        if args.role in ("reviewer", "reviewer-for-codex", SONNET_REVIEW_ROLE):
             families = set()
             for builder in builders:
                 if re.fullmatch(r"(?:claude-)?(?:fable|opus|sonnet|haiku)(?:-.*)?", builder):
@@ -1138,7 +1347,10 @@ def model_route(args):
                     return incomplete("no independent reviewer for unrecognized builder: " + builder)
             if len(families) > 1:
                 return incomplete("no independent reviewer for mixed Claude and Codex builders")
-            if families:
+            if args.role == SONNET_REVIEW_ROLE:
+                if "codex" not in families:
+                    return incomplete("no independent reviewer for " + args.role + " without a Codex builder")
+            elif families:
                 candidates = ("reviewer-for-codex",) if "codex" in families else ("reviewer",)
         route = next((routes[role] for role in candidates
                       if role in routes and independent(routes[role]["model"])), None)

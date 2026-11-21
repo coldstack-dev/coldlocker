@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from datetime import datetime, timezone
+import http.client
 import json
 import os
 from pathlib import Path
@@ -14,6 +16,7 @@ import time
 import urllib.request
 
 from gateway_adapter import BindingRefresher, LOOPBACK, SKIPPED_NEXT_STEP, VERSION, drop_unset, environment, launch_settings, prepare, private_directory, redact_log, save, skipped, sync, ui_bindings
+from checks.validators import NAME
 from portable import lock as acquire, python_command
 from store import FileStore, QuietParser, ordinary_path
 import executor_connector
@@ -213,11 +216,14 @@ def install():
         install_runtime()
 
 
-def ps(pid, field):
+def ps(pid, field, *, utc=False):
+    env = dict(os.environ, LC_ALL='C')
+    if utc:
+        env['TZ'] = 'UTC'
     try:
         result = subprocess.run(['ps', '-ww', '-o', field + '=', '-p', str(pid)], capture_output=True, text=True,
-                                env=dict(os.environ, LC_ALL='C'), encoding='utf-8')
-    except OSError:
+                                env=env, encoding='utf-8', timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() or None
 
@@ -232,15 +238,16 @@ def identity(pid):
         return None
 
 
-def is_supervisor(pid):
+def is_supervisor(pid, *, checkout=None):
+    script = (ROOT if checkout is None else checkout) / 'gateway.py'
     if sys.platform != 'linux':
-        interpreter, found, rest = (ps(pid, 'args') or '').partition(f" {ROOT / 'gateway.py'} _run")
+        interpreter, found, rest = (ps(pid, 'args') or '').partition(f" {script} _run")
         return bool(found) and rest[:1] in ('', ' ') and re.fullmatch(r'python[\w.]*', Path(interpreter).name, re.I) is not None
     try:
         argv = Path('/proc', str(pid), 'cmdline').read_bytes().decode().split('\0')
     except OSError:
         return False
-    return argv[1:3] == [str(ROOT / 'gateway.py'), '_run'] and re.fullmatch(r'python[\w.]*', Path(argv[0]).name, re.I) is not None
+    return argv[1:3] == [str(script), '_run'] and re.fullmatch(r'python[\w.]*', Path(argv[0]).name, re.I) is not None
 
 
 def listeners(port):
@@ -260,7 +267,7 @@ def listeners(port):
             for line in output.splitlines()]
 
 
-def state(runtime):
+def state(runtime, *, checkout=None):
     path = ordinary_path(runtime / 'pid.json')
     if not path.exists():
         return None
@@ -271,7 +278,7 @@ def state(runtime):
     current = identity(pid)
     if not current or current != value['identity']:
         return None
-    return value if is_supervisor(pid) else None
+    return value if is_supervisor(pid, checkout=checkout) else None
 
 
 def settings(runtime):
@@ -524,6 +531,117 @@ def start_runtime(runtime, port, auto_refresh=False, dashboard=False, require_to
 
 def endpoint(port):
     return f'http://{LOOPBACK}:{port}/mcp'
+
+
+def health_json(port, route, *, child=None, body=None, headers=None, limit=8192, statuses=(200,)):
+    connection = http.client.HTTPConnection(LOOPBACK, port, timeout=5)
+    try:
+        if child is not None:
+            connection.connect()
+            found = listeners(port)
+            if not found or any(address != f'{LOOPBACK}:{port}' or child not in pids for address, pids in found):
+                raise ValueError('unverified gateway listener')
+        connection.request('GET' if body is None else 'POST', route, body=body, headers=headers or {})
+        response = connection.getresponse()
+        data = response.read(limit + 1)
+        if response.status not in statuses or len(data) > limit:
+            raise ValueError('unexpected gateway response')
+        return response.status, json.loads(data)
+    finally:
+        connection.close()
+
+
+def upstream_reason(server):
+    status = server['status']
+    error = server.get('error') or ''
+    if status == 'oauth_required' or re.search(r'\bstatus[:= ]+40[13]\b', error, re.I):
+        return 'upstream authentication failed'
+    if status == 'connecting':
+        return 'connection in progress'
+    if re.search(r'\b(?:ETIMEDOUT|timed out)\b', error, re.I):
+        return 'connection timed out'
+    return 'upstream connection failed'
+
+
+def disconnected_upstreams(root, port, child, total, disconnected):
+    if type(child) is not int or child <= 1:
+        raise ValueError('invalid gateway listener identity')
+    store = FileStore(root)
+    _, login = health_json(port, '/api/auth/login', child=child,
+                           body=json.dumps({'username': 'admin', 'password': store.resolve('secret://gateway-admin')}),
+                           headers={'Content-Type': 'application/json'})
+    token = login['token']
+    if login['success'] is not True or not isinstance(token, str) or not re.fullmatch(r'[\w.-]+', token, re.ASCII):
+        raise ValueError('invalid gateway dashboard token')
+    _, response = health_json(port, '/api/servers', child=child,
+                              headers={'x-auth-token': token}, limit=4 * 1024 * 1024)
+    if response['success'] is not True or not isinstance(response['data'], list):
+        raise ValueError('invalid gateway dashboard response')
+    names = set()
+    down = []
+    for server in response['data']:
+        config = server.get('config') or {}
+        if (server['enabled'] is False or 'credentialTemplate' in config
+                or (config.get('oauth') or {}).get('identityMode') == 'personal'):
+            continue
+        name = server['name']
+        if not NAME.fullmatch(name) or name in names or server['enabled'] is not True:
+            raise ValueError('invalid upstream record')
+        names.add(name)
+        if not isinstance(server['status'], str):
+            raise ValueError('invalid upstream status')
+        if server['status'] != 'connected':
+            if store.redact(name) != name:
+                name = '[redacted]'
+            down.append(f'gateway upstream {name} disconnected ({upstream_reason(server)})')
+    if len(names) != total or len(down) != disconnected:
+        raise ValueError('upstream status changed during health check')
+    return sorted(down)
+
+
+def started_before_head(root, pid):
+    start = ps(pid, 'lstart', utc=True)
+    if not start:
+        raise ValueError('gateway start time unavailable')
+    result = subprocess.run(['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root,
+                            capture_output=True, text=True, timeout=5)
+    commit = result.stdout.strip()
+    if result.returncode or not re.fullmatch(r'[0-9]+', commit):
+        raise ValueError('checkout HEAD time unavailable')
+    started = datetime.strptime(start, '%a %b %d %H:%M:%S %Y').replace(tzinfo=timezone.utc)
+    return started.timestamp() < int(commit)
+
+
+HEALTH_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError,
+                 http.client.HTTPException, subprocess.SubprocessError)
+
+
+def health_report(root, port, current):
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError('invalid gateway port')
+    code, payload = health_json(port, '/health', statuses=(200, 503))
+    status = payload['status']
+    if status not in ('healthy', 'degraded', 'unhealthy'):
+        raise ValueError('unknown health status')
+    total, connected, disconnected = (payload['servers'][key] for key in ('total', 'connected', 'disconnected'))
+    if any(type(count) is not int or count < 0 for count in (total, connected, disconnected)):
+        raise ValueError('invalid gateway connection count')
+    if connected + disconnected != total:
+        raise ValueError('inconsistent gateway connection counts')
+    summary = f'gateway {status} ({connected}/{total} connected, {disconnected} disconnected)'
+    warnings = []
+    current = current if current and current.get('port') == port else {}
+    if disconnected:
+        try:
+            warnings.extend(disconnected_upstreams(root, port, current['child'], total, disconnected))
+        except HEALTH_ERRORS:
+            warnings.append('gateway disconnected upstream details unavailable')
+    try:
+        if started_before_head(root, current['pid']):
+            warnings.append('gateway service started before checkout HEAD')
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        warnings.append('gateway service start time unavailable')
+    return summary, code == 200 and status == 'healthy' and disconnected == 0, warnings
 
 
 def servers_line():

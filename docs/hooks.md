@@ -14,14 +14,36 @@ cites `rules/verify-before-merge.md`. `create-verification-skill`,
 Without the pack, apply your own project's verification and model-routing
 policy where those skills name a missing rule.
 
-## Not a security boundary
+## Credentials boundary
 
-The owner, publication and dispatch guards are a best-effort command filter, not
-a security boundary. They read the text of a tool call before it runs, as the
-same user the agent runs as, so one allowed call can switch them off or go
-around them. A real boundary has to sit outside the agent's user, for example
-GitHub credentials that cannot change a repository's visibility or push to a
-public repository.
+The owner, publication and dispatch guards are best-effort command filters.
+They run before a tool call under the agent's local user. The host, provider or
+service authorizes the identity that actually makes the request, including
+requests made through MCP, CI or a client without hooks.
+
+| Protected action | Authorized identity | What enforces it |
+| --- | --- | --- |
+| Edit owner state, guard or routing configuration, hook files, local Git metadata or `origin` | Installation owner for policy and origin changes. The checkout user can write its own Git metadata during ordinary work. | Host filesystem permissions and the client sandbox, where configured. Without those restrictions, an agent running as the owner has the same filesystem access as the owner. The hook's owner-only rule adds a check within that shared identity. |
+| Push private refs, delete a stale branch, open a PR or create a private repository release | Builder or automation identity with access to the target repository and permission for the action. | GitHub checks repository access and the permissions for each action. Branch protection and rulesets govern protected refs. The hook's one-open-PR rule and its secret scan are local checks. GitHub's authorization does not inspect the contents for secrets. |
+| Push or replace public refs, or create or edit a public release | Owner-authorized release identity with write access to that repository. | GitHub checks the caller's write permission and applicable ref rules. Release writes and ref writes require `Contents: write` for fine-grained credentials. A builder with those same grants can exercise them. GitHub does not read Coldrelease receipts. [Git references](https://docs.github.com/en/rest/git/refs) · [Releases](https://docs.github.com/en/rest/releases/releases) |
+| Create a public repository, change visibility, or make administrative repository changes | Owner or administrator with the relevant GitHub permission. Public repository creation requires permission in the destination namespace. | GitHub account or organization policy controls creation and visibility. Existing repository changes such as branch protection updates and removal of admin enforcement require `Administration: write` for fine-grained credentials. GitHub authorizes the update when it arrives. The hook's earlier read and one-use owner approval do not make that update atomic with the read. [Visibility policy](https://docs.github.com/en/organizations/managing-organization-settings/restricting-repository-visibility-changes-in-your-organization) · [Branch protection](https://docs.github.com/en/rest/branches/branch-protection) |
+| Dispatch a child or start a job | Caller with access to the dispatch host or runner and its configured provider account. | The host and provider enforce their own access and model entitlements. Coldlocker routing roles and builder exclusions are hook policy. They grant no service permissions. |
+| Grant or use hosted catalog access | Configured owner approves consent. An approved client holds a `catalog:read` bearer token. | The Worker checks the signed Cloudflare Access assertion and owner email on both consent requests. The OAuth provider checks the bearer and scope at `/mcp`. That endpoint only exposes catalog reads. [Hosted catalog authorization](remote.md#architecture) |
+| Publish hosted catalog KV or deploy the Worker | Owner or delegated Cloudflare publisher for the account. | Cloudflare checks KV write permission for catalog publication and Workers deployment permissions for code or route changes. [Cloudflare permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) |
+
+Provider grants define the effective boundary. For public publishing to be
+reserved to the release identity, builder credentials must lack the applicable
+public repository write and administrative grants. The same applies to other
+credentials the builder can reach. A hook denial says nothing about which
+grants the provider has issued.
+
+The [Worker OAuth tests](../remote/test/oauth.test.ts) exercise the actual
+authorization handler with disposable local KV and signed test identities.
+They check that the Worker returns HTTP 403 and issues no redirect with a code
+when a signed non-owner submits an approval, even with a valid consent session.
+The tests call the Worker directly, with no client hooks. They prove the Worker
+decision for the fixture identities. Live GitHub, host and Cloudflare grants
+are specific to each installation.
 
 The guards do not cover:
 
@@ -50,8 +72,7 @@ The guards do not cover:
 - Tools other than shell commands. The publication guard reads only Claude
   `Bash` and Codex `exec_command`, so an MCP or other tool that changes a
   repository is not checked.
-- Sessions in chat mode (`chat:`), where only the owner guard runs, and guards
-  the owner switched off in `~/.coldlocker/guards.json`.
+- Guards the owner switched off in `~/.coldlocker/guards.json`.
 - Clients, scripts, CI jobs and scheduled tasks that don't load the hook.
 
 ## Update self-test
@@ -232,6 +253,17 @@ block and completion reminder. Tool calls enforce publication approvals and
 routed dispatch. A Claude `Agent` or `Task` call may name its model by the tool's
 alias (`haiku`, `sonnet`, `opus` or `fable`) only when the routed Claude model ID
 belongs to that family; a missing model or another family is denied.
+
+Before publishing from Codex, check the Coldlocker `PreToolUse` entry in
+`/hooks` or the app-server `hooks/list` response. It must be enabled and trusted.
+Codex skips a hook whose trust status is `modified`, even when it is enabled.
+A SessionStart reminder only proves that a SessionStart hook ran. An owner
+must review and trust the current PreToolUse entry in Codex, then start a fresh
+agent session. From that session run `false && git push coldlocker-hook-probe-invalid HEAD:refs/heads/hook-probe`.
+The hook must explicitly deny the tool call. If the hook is missing or the
+shell merely exits with code 1, stop before publishing. Updating the hook
+checkout alone does not restore Codex's trust.
+
 `gh pr create` (or `gh pr new`) is denied while the signed-in `gh` account already has an
 open pull request on the target repository; repositories the account owns are exempt. The target is
 the `--repo` value, or else the repository `gh repo view` resolves in the working folder. If the guard
@@ -240,17 +272,30 @@ can't list the account's open pull requests or resolve the target, it denies the
 `GIT_DIR`, `GIT_WORK_TREE`, `ssh` or `gh auth switch`/`login`, and one without `--repo` after `cd`, `pushd`
 or `popd`, because the account or repository it checks could differ from the one used.
 One call may create at most one pull request per upstream repository.
-A private push is also denied when the commits it sends (those not yet on any
-remote-tracking ref, merges compared with their first parent; every local branch
-and tag when the push names no refspec, or every local ref when a
-`remote.*.push` or `remote.*.mirror` is configured) add a
-token-shaped value that `checks/scan.py` recognizes. The reason names the
-pattern, file and line, never the value. A scan that fails, or whose git log and
-pattern match together take over 10 seconds, denies the push; the deadline is
+A private push is also denied when the selected refs add a token-shaped value
+that `checks/scan.py` recognizes. The scan excludes commits on remote-tracking
+refs and compares merges with their first parent. Without a refspec, it uses the
+named remote's configured push refspecs or Git's `push.default`. The default
+`simple` mode and the `current` and `upstream` modes use the current branch as
+the source. The `matching` mode and explicit `:` screen every local branch
+because the remote determines which branch names match. `--all` selects local
+branches and `--tags` selects local tags. If the guard cannot determine the
+scope, it denies the push with the reason. For example, `push.followTags` can add
+tags based on the remote's refs, so disable it or select all tags explicitly to
+let the scan proceed.
+
+A token finding names the pattern, file and line without revealing the value.
+A scan that fails or takes over 10 seconds denies the push. The deadline is
 checked between pattern passes, so one pass can run over it. This runs
 before CI; Coldverify's secret scan in CI still checks every pull request.
 Private pushes may include quiet, delete, force and bare force-with-lease flags,
-or appear once in a compound command. Compound pushes require verified PRIVATE
+or appear once in a compound command. A private push that deletes or forces
+(`--delete`, `:<branch>`, `-f`, `--force`, bare `--force-with-lease`, `+<refspec>`)
+must name each branch it changes, and is denied when one of them is the repo's
+default branch (from `gh repo view`), when it deletes a branch with an open pull
+request, or when it names `HEAD`. A push without a refspec is denied when it
+forces or deletes, or when remote configuration requests a forced update,
+deletion, or mirror. Compound pushes require verified PRIVATE
 visibility, no command substitutions or environment changes, and at most one
 leading `cd` to a literal absolute path. Companion commands are limited to
 `true`, `false`, `:`, `echo`, `pwd`, `cat`, `head`, `tail` and `wc`. Run commits
@@ -284,6 +329,27 @@ An invalid or symlinked file denies every public push. `coldrelease publish` and
 `coldrelease ship` push the release commit themselves; the guard does not treat them
 as pushes. Private pushes require verified PRIVATE visibility.
 Public pushes with `push.followTags` enabled are denied. Guard errors deny tool calls.
+
+### Recover the ColdVerify v0.2.0 tag
+
+Use this recovery when ColdVerify's approved branch push reached GitHub before
+the shell ran the publication hook. Run this one command from the approved
+ColdRelease `release.git` checkout, where `public` names the ColdVerify GitHub
+HTTPS remote:
+
+```sh
+git push public 0c088cbd91e4b59ff8768aa3ea3b9945453eef79:refs/tags/v0.2.0
+```
+
+The guard requires GitHub's `HEAD` to name `refs/heads/main` at that exact
+commit, an absent tag, the matching ColdRelease PASS receipt and the unspent
+approval. The guard still checks the owner's public push policy. It consumes
+the approval before Git runs and records that consumption as a directory.
+Only a regular file from a guarded branch push authorizes `gh release create`.
+Git rejects a conflicting tag that appears after the check. Use anonymous
+`git ls-remote` before and after to confirm the exact tag was the only ref added.
+
+### Create a public GitHub release
 
 A public release is made with exactly this command, after the gated push of `<full 40-hex sha>`:
 
@@ -373,18 +439,24 @@ Coldrecall on session and subagent start, bounded to a few facts:
 It reads the repository's compiled `.coldrecall/reflex.json` (or the main
 checkout's, from a linked worktree) and prints nothing when there is none.
 
-Start a message with `chat:` to switch one session to chat mode. The Coldlocker hook,
-every chained command and the keep-going hook then do nothing for that session,
-the publication and dispatch guards included (the owner guard still runs), and the agent is told to ignore the rules injected earlier.
-Start a message with `work:` to switch back. The switch is a file at
+Start a message with `chat:` to switch one session to chat mode. Chat defaults
+to reminders, keep-going and the `dispatch` routing check off. Only the
+risky-action denies stay on: the owner check and the publication guard
+(including public-push rules). Whenever reminders are off, in any mode or by `guards.json`,
+Coldlocker suppresses the briefing, lessons and chained context. Chat also asks
+the agent to set aside earlier workflow reminders. When keep-going is on, the prompt still gets
+the Goal/Status footer and the Stop hook still checks tool turns.
+Other PreToolUse guards and chained PreToolUse commands follow the installed policy. Their
+denies still apply, but with reminders off their context is dropped.
+Start a message with `work:` to return to work mode, where reminders,
+keep-going and `dispatch` default to on. The chat switch is a file at
 `~/.coldlocker/chat/<session_id>`, so it doesn't affect other sessions.
 
 To start sessions without development context, launch the client with
 `COLDLOCKER_START_IN_CHAT=1` in its environment (for example
 `COLDLOCKER_START_IN_CHAT=1 claude`). SessionStart, SubagentStart and
 UserPromptSubmit then inject nothing: no briefing, lessons, footer or chained
-output. Every guard still runs as in a normal session. Only a typed `chat:` turns
-the publication and dispatch guards off. Only the value `1` turns it on.
+output. Every guard still runs as in a normal session. Only the value `1` turns it on.
 
 ### Owner guard switches
 
@@ -397,6 +469,32 @@ GitHub `owner/repo` (the literal `origin` URL in the local git config of the ses
 {"default": {"keep_going": true},
  "repos": {"example-org/example-repo": {"keep_going": false, "reminders": false}}}
 ```
+
+#### Custom modes
+
+`~/.coldlocker/modes.json` defines custom modes. Each maps a mode name (lowercase
+letters, digits, `-` or `_`, up to 32, not `chat` or `work`) to `reminders` and
+`keep_going` set to true or false. Start a message with `research:` to turn on
+the `research` mode for that session, and with `work:` to leave it. A prefix that
+names no defined mode, such as `note:`, does nothing. The active mode is stored at
+`~/.coldlocker/mode/<session_id>`, and `chat:` and a custom mode replace each other.
+
+```json
+{"research": {"reminders": false, "keep_going": false}}
+```
+
+A mode can change reminders and keep-going. A custom mode that
+names any other key (`publication`, `dispatch`, `public_push`, anything else) or a
+value that is not true or false makes the whole file invalid. No custom mode then
+applies, the guards keep their `guards.json` values, and the error appears in the
+prompt context and in deny reasons. For chat, work and custom modes, a matching
+`repos` setting wins over the owner-wide `default`, followed by any active mode
+setting and then the built-in default. Invalid owner guard settings keep both
+switches on. Mode-switch messages show the effective profile, for example
+`(reminders off). Keep-going off. Guards on: owner, publication.` in chat, with
+`public-push veto for this repo` added when `guards.json` says no to public pushes
+for the session's `origin`. The publication guard still checks each push's actual
+destination against every `guards.json` veto.
 
 #### Saying no to public pushes
 
@@ -447,6 +545,16 @@ letters, digits, `_` and `-`, not starting with `-`, with single dots between th
 - `printf '%s\n' <64 lowercase hex> > ~/.coldlocker/release-denylist.sha256`, only when the
   hex is the sha256 of `~/.config/coldrelease/denylist.json` at that moment and the target is
   absent or a regular file with one link. This is the only write to `~/.coldlocker` a yes allows.
+- `gh api -X PUT repos/<owner>/<repo>/branches/<branch>/protection --input <relative file>`, only
+  when, at that moment, `gh api` reports the repository private and the branch unprotected, and the
+  file names at least one required check (in `contexts` or `checks`, not both) with `allow_force_pushes` and `allow_deletions` false.
+  On a branch that is already protected, the same PUT is allowed only when the live protection reads
+  cleanly and the file is add-only against it: every other setting given exactly as it is now, every
+  existing required check (with its app) and the `strict` setting kept, and no signature, push-restriction
+  or review-bypass rules on the branch (the PUT cannot carry those over). Anything unreadable is refused.
+- `gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/<branch>`, only when, at that moment, `gh api`
+  reports the branch is not the default branch, not protected, used by no open pull request (as head or
+  base), and its head commit is in the default branch or is the head of a merged pull request.
 
 Any other command, including a different spelling of one of these, gets no yes. New shapes
 are added only by a reviewed pull request to `YES_SHAPES` in `hooks/owner_rules.py`. Every grant and use is
@@ -459,16 +567,16 @@ command names makes every record unusable, except the checksum write, which push
 an inherited variable such as `GH_REPO` acts on whatever that variable says when it runs. This stops accidents and unrequested changes
 and leaves an audit line; it does not stop an agent that claims a yes it never got.
 
-Outside a git repo or without an origin, only `default` applies; if git errors inside a repo
-or origin has several URLs, every guard stays on.
-Edits take effect on the next hook call. A missing file means every guard is on. After upgrading, rerun
+Outside a git repo or without an origin, only the owner-wide `default` can override the mode.
+If git errors inside a repo or origin has several URLs, every guard stays on.
+Edits take effect on the next hook call. With a missing file, mode settings and built-in defaults apply. After upgrading, rerun
 the installer once with `--hook-root` so the Stop hook gets `--owner-rules`. Until then `keep_going: false`
 only drops the prompt's completion reminder; the Stop hook keeps blocking, and its block message states
 the required Goal:/Done condition:/Evidence:/Remaining:/Status: ending.
 The file is read only where the Coldlocker hook (installed with `--hook-root` by the same Python) is present, because
 that hook keeps agents out of it; otherwise the Stop hook ignores it and every guard stays on.
 If the file is invalid, a symlink or not a regular file, or if it exists and git errors, every guard stays on and the error appears in the prompt
-context (silent in chat mode) and in deny reasons. Agent edits to `~/.coldlocker`, tool calls that run inside it, non-delegation tool calls whose input names it or
+context and in deny reasons. Agent edits to `~/.coldlocker`, tool calls that run inside it, non-delegation tool calls whose input names it or
 `guards.json`, and changes to a repo's `origin` remote (including `git remote` commands that use shell
 expansion and the `git config` `set`, `unset`, `rename-section` and `remove-section` subcommands; a rename checks both section names) or paths into git metadata (`.git`) are always denied (chat mode included). Git commands that write other metadata (commit, `git config user.*`)
 stay allowed. Read-only tools (Read, Glob, Grep, LS) and delegation prompts are not checked. File tools (Write, Edit,

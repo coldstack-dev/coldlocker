@@ -320,6 +320,8 @@ def server_findings(label, server, known_hosts, upstream=False):
         joined = ' '.join([command, *[a for a in args if isinstance(a, str)]])
         if INSTALL.search(joined):
             found.append(finding(PACKAGE, 'install-step', 'Installs packages when the server starts, which runs their install scripts', label))
+    if isinstance(args, list) and any(isinstance(a, str) and 'secret://' in a for a in args):
+        found.append(finding(SECRET, 'secret-in-args', 'Passes a secret:// value on the command line, where other local users can read it in the process list; if the server accepts the credential from an environment variable, move it to env', label, severity='warn'))
     environment = {field: server[field] for field in ('env', 'headers') if isinstance(server.get(field), dict)}
     mapped = [value for mapping in environment.values() for value in mapping.values() if isinstance(value, str)]
     if not upstream:

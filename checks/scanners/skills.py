@@ -6,7 +6,7 @@ from .common import ERRORS, digest, read, tree_hash
 
 class SkillMixin:
     def packages(self, agent, base, vendor=False, builtin=False):
-        for path in self.walk(base, depth=12 if vendor else 5):
+        for path in self.walk(base, depth=12 if vendor else 5, package_agent=agent):
             if path.name != 'SKILL.md':
                 continue
             package = path.parent

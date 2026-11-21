@@ -161,16 +161,64 @@ class AgentsSyncTests(unittest.TestCase):
         self.assertIn('${COLDLOCKER_SECRET_', path.read_text(encoding='utf-8'))
         self.assertTrue((output / '.agents/skills/sample/resources/data.txt').is_file())
 
+    def test_clean_skill_exports_unchanged_with_private_patterns(self):
+        self.imported()
+        (self.local.parent / 'private-patterns.txt').write_text('synthetic-export-marker\n', encoding='utf-8')
+        output = self.base / 'output'
+        self.assertEqual(connector.export_project(output, self.root), 0)
+        self.assertEqual((output / '.agents/skills/sample/resources/data.txt').read_bytes(),
+                         (self.local / 'skills/sample/resources/data.txt').read_bytes())
+
     def test_export_does_not_copy_python_bytecode_cache(self):
         self.imported()
         cache = self.local / 'skills/sample/__pycache__'
         cache.mkdir()
         (cache / 'x.cpython-314.pyc').write_bytes(b'bytecode')
+        (self.local.parent / 'private-patterns.txt').write_text('bytecode\n', encoding='utf-8')
         output = self.base / 'output'
         output.mkdir()
         connector.export_project(output, self.root, 'http://localhost:43871/mcp')
         self.assertTrue((output / '.agents/skills/sample/SKILL.md').is_file())
         self.assertFalse((output / '.agents/skills/sample/__pycache__').exists())
+
+    def test_export_refuses_private_patterns_before_any_write(self):
+        blocked = 'synthetic-export-marker'
+        self.server['args'] = [blocked.upper()]
+        self.imported()
+        support = self.local / 'skills/sample/resources/data.txt'
+        manifest_path = self.local / 'manifest.json'
+        manifest = hub.read_json(manifest_path)
+        skill = manifest['skills'][0]
+        patterns = self.local.parent / 'private-patterns.txt'
+        patterns.write_text(blocked + '\n', encoding='utf-8')
+        for payload in ('registry', 'content', 'filename'):
+            with self.subTest(payload=payload):
+                output = self.base / payload
+                args = argparse.Namespace(command='agents-export', target=output, locker_root=self.root,
+                                          gateway_url=None)
+                if payload == 'content':
+                    manifest['mcp_servers'] = []
+                    support.write_text(blocked + '\n', encoding='utf-8')
+                if payload == 'filename':
+                    support.write_text('clean support content\n', encoding='utf-8')
+                    support.rename(support.with_name(blocked + '.txt'))
+                skill['sha256'] = validators.digest(support.parent.parent)
+                hub.write_json(manifest_path, manifest)
+                with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    self.assertEqual(connector.run(args), 1)
+                diagnostic = stdout.getvalue() + stderr.getvalue()
+                self.assertIn('private-pattern at line', diagnostic)
+                self.assertNotIn(blocked, diagnostic.lower())
+                self.assertFalse(output.exists())
+
+    def test_export_refuses_invalid_private_pattern_before_any_write(self):
+        self.imported()
+        (self.local.parent / 'private-patterns.txt').write_text('[synthetic-invalid\n', encoding='utf-8')
+        output = self.base / 'output'
+        with self.assertRaisesRegex(ValueError, 'invalid pattern') as raised:
+            connector.export_project(output, self.root)
+        self.assertNotIn('synthetic-invalid', str(raised.exception))
+        self.assertFalse(output.exists())
 
     def test_export_reuses_a_legacy_gateway_alias_and_preserves_profile_references(self):
         self.imported()

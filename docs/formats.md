@@ -64,6 +64,7 @@ ENTRY (routines use `id` instead of `name`):
 - `provenance.origin` is a short label (`authored`, `upstream`, `local-import`, ...) with no path separators.
 - `owner` is one short label naming who maintains the item.
 - A file's `sha256` is the hex digest of its bytes. A directory's `sha256` is the hex digest of the concatenation, in sorted relative-path order, of `"<relpath>\0<file sha256 hex>\n"` for each regular file. Symlinks and `.git` are skipped.
+- A routine entry may also have `prompt_sha256`, the sha256 of its prompt file. Import records it. A re-import is refused while the prompt differs from both it and the incoming prompt, so a prompt edited in the locker is not overwritten; an entry without it accepts only an identical prompt. To replace an edited prompt, copy it out of the locker, then remove the routine and import it again.
 - Lists are sorted by name or id. The manifest is written as 2-space JSON with a trailing newline.
 
 ## packs.json
@@ -196,3 +197,28 @@ first. A missing `briefing.md`, or one that lists no lessons, fails without chan
 the catalog. Lessons whose id is duplicated or differs from the file name, or whose
 name would be invalid, are not served, and the command exits 1 after syncing the rest. Lesson delivery does not depend
 on this mirror.
+
+### Portable delivery receipt
+
+The [synthetic JSON receipt](verification/lesson-delivery-receipt.json) maps
+the CL-15 lesson record and its completed delivery registration to metadata
+another product can read without a Coldlocker installation. Receipt
+`schema_version` identifies this JSON layout independently of the lesson
+record version.
+
+| Receipt field | Source |
+| --- | --- |
+| `lesson` | `lesson` from the lesson record. Keep the full identifier, including its revision suffix. |
+| `source_revision` | `replay.after.commit`, the fix commit used for the passing replay. |
+| `evidence_ref` | `replay.receipt`, an opaque reference to the ColdFix replay evidence. The example uses a synthetic identifier. |
+| `disposition` | `delivered` when the managed instructions link to the snapshot and the registry entry matches the snapshot hash and has `lesson: true` and `pending: false`. This describes the copy at delivery time. |
+| `owner` | Coldlocker, which records delivery and owns this receipt. ColdFix owns lesson validity, withdrawal decisions, and the referenced replay evidence. |
+| `retention` | `keep-in-git` records that Coldlocker keeps the synthetic receipt in Git as a format example. |
+
+Consumers can retain the receipt as historical delivery metadata after a lesson
+is withdrawn. Use the current ColdFix status and Coldlocker registration to
+decide whether the lesson is available now. Coldlocker archives the owned
+snapshot before it removes an active registration. Before deleting a retained
+copy, check its owner's retention policy and confirm preservation if that policy
+requires it. Ask the ColdFix evidence owner about retention for the referenced
+replay.

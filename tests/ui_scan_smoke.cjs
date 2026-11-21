@@ -33,6 +33,18 @@ state.report = {agents: {claude: {}, codex: {}}, items: [
 renderScan();
 `, context);
 assert.equal(get('scan-items').children.length, 3);
+assert.equal(get('scan-errors').children.length, 0);
+vm.runInContext(`
+state.report.incomplete_inventory = [{
+  source: '<codex-home>/skills', limit: 5, reason: 'reached the depth limit of 5',
+  next_step: 'Narrow that folder and scan again.',
+}];
+renderScan();
+`, context);
+assert.deepEqual(get('scan-errors').children.map(node => node.textContent),
+  ['Incomplete inventory: <codex-home>/skills reached the depth limit of 5. Narrow that folder and scan again.']);
+vm.runInContext('state.report.incomplete_inventory = []; renderScan();', context);
+assert.equal(get('scan-errors').children.length, 0);
 const everything = node => [node, ...node.children.flatMap(everything)];
 const agentGroups = () => everything(get('scan-items')).filter(n => n.tag === 'details');
 assert.deepEqual(agentGroups().map(n => n.children[0].textContent), ['Skills · 1 found', 'Plugins · 1 found', 'Connections · 1 found']);

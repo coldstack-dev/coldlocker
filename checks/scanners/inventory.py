@@ -70,12 +70,15 @@ class Inventory(ReportMixin, SkillMixin, ServerMixin, PluginMixin, RoutineMixin)
     def tilde(self, text):
         return self.home_prefix.sub('~', text)
 
-    def walk(self, base, depth=8, limit=5000):
-        return walk(base, depth, limit, self.walk_limited)
+    def walk(self, base, depth=8, limit=5000, *, report_depth=True, package_agent=None):
+        return walk(base, depth, limit, self.walk_limited, report_depth=report_depth, package_agent=package_agent)
 
-    def walk_limited(self, base, limit):
+    def walk_limited(self, base, limit, reason=None):
         source = self.source(base)
-        self.incomplete_inventory[source, limit] = {'source': source, 'limit': limit}
+        receipt = {'source': source, 'limit': limit}
+        if reason:
+            receipt.update(reason=reason, next_step='Narrow that folder and scan again.')
+        self.incomplete_inventory[source, limit, reason] = receipt
 
     def source_path_binding(self, original, portable):
         if not isinstance(original, str) or not isinstance(portable, str):

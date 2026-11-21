@@ -513,14 +513,31 @@ def client_token_matches(root, value):
         hmac.compare_digest(value.encode(), store.resolve('secret://' + TOKEN_SECRET).encode())
 
 
-def direct_entries(text, agent, served):
+def identical_imports(root, home, platform, environment, served, path, agent, group):
+    from checks.scanners.common import ERRORS, slug
+    from checks.scanners.inventory import Inventory
+    try:
+        inventory = Inventory(home, (), platform, environment, lambda command: '', Path(root), live=False)
+        for name, entry in group.items():
+            if slug(name) in served:
+                inventory.server(agent, path, name, entry, opencode=agent == 'opencode')
+        items = [item for item in inventory.finish()['items'] if item['kind'] == 'mcp_server']
+    except ERRORS:
+        return set()
+    same = {item['name'] for item in items if item['status'] == 'already_in_locker'}
+    return same - {item['name'] for item in items if item['status'] != 'already_in_locker'}
+
+
+def direct_entries(text, agent, retirable):
+    from checks.scanners.common import slug
     value = (toml(text) if agent == 'codex' else json_object(text)) if text.strip() else {}
     group = value.get(group_key(agent), {})
     if not isinstance(group, dict):
         return []
     kept = {'coldlocker', 'coldlocker-gateway', *LEGACY_SERVERS}
-    return [name for name in group if name not in kept and
-            (re.sub('[^a-z0-9-]+', '-', str(name).lower()).strip('-') if agent == 'codex' else name) in served]
+    group = {name: entry for name, entry in group.items() if name not in kept}
+    identical = retirable(agent, group)
+    return [name for name in group if slug(name) in identical]
 
 
 def retire_toml(text, names):
@@ -872,7 +889,9 @@ def run(args, root, env=None, stdin=None, output=None):
                 print('OpenCode: manual merge (jsonc) - paste this snippet into ' + str(path.with_suffix('.jsonc')), file=output)
             elif args.write:
                 change = plan(path, agent, entries(checkout, agent, gateway, native=own), getattr(args, 'migrate_names', False),
-                              Path(environment.get('CLAUDE_CONFIG_DIR') or home / '.claude'), served)
+                              Path(environment.get('CLAUDE_CONFIG_DIR') or home / '.claude'),
+                              served and (lambda agent, group, path=path: identical_imports(
+                                  root, home, args.platform, environment, served, path, agent, group)))
                 if change[1] == change[2]:
                     print('already connected', file=output)
                 else:
@@ -895,6 +914,7 @@ def run(args, root, env=None, stdin=None, output=None):
     if windows and remote:
         print('Not written on Windows: ' + ', '.join(remote) + ' (not stdio); add each in the client by hand, see docs/clients.md.', file=output)
     if imported and not windows and gateway.get('backend') != 'executor':
+        print('Use the coldlocker entry to browse the catalog while the gateway is stopped.', file=output)
         print('Imported MCP servers (' + ', '.join(sorted(imported)) + ') reach other agents only through the gateway, which is not running. '
               'Start it (Node 20+), then rerun this command: ' + python_command() + ' gateway.py install && ' + gateway['command'], file=output)
     if not args.agent or 'grok' in requested:

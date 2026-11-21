@@ -25,6 +25,19 @@ covers one successful real Claude Code and Codex session on the synthetic
 catalog. Repeat the intended task for a new supported client or journey using
 the [release guide](release.md); an offline fixture pass alone is insufficient.
 
+## Optional peer unavailable
+
+The offline Codex configuration fixture selects Executor with no auth headers
+and blocks network access. `gateway.py status` must exit 1, report `unreachable`,
+and list no Executor tools. The fixture follows the [standalone client
+setup](clients.md#imported-mcp-servers), then uses the `coldlocker` stdio entry
+written by `hub.py connect` to read a local skill and its supporting file. The
+existing unrelated entry stays in place and no gateway entry is added.
+
+```sh
+python3 -m unittest discover -s tests -p test_local_catalog_proof.py -k executor_is_unreachable -v
+```
+
 ## Gateway fixture proof
 
 The acceptance runner is fixture evidence. It uses the pinned MCPHub 1.1.7

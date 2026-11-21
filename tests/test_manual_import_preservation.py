@@ -405,16 +405,88 @@ class ManualImportPreservationTests(HubCase):
         self.assertEqual(metadata.read_bytes(), b'ref: refs/heads/main\n')
         self.assertEqual(nested.read_bytes(), b'Fixture metadata\n')
 
-    def test_routine_same_owner_prompt_update_follows_definition_hash_contract(self):
+    def test_routine_locally_edited_prompt_is_not_overwritten(self):
         source, relative, _ = self.item('routine')
         self.run_import('routine', source)
         prompt = (self.local / relative).parent / 'prompt.md'
         prompt.write_bytes(b'Local prompt edit\n')
         (source.parent / 'prompt.md').write_bytes(b'Updated upstream prompt\n')
+        before = self.tree()
+        output = self.cli('import-routine', source, '--owner', 'maintainer', code=1)
+        self.assertIn('routine prompt differs from its recorded hash', output)
+        self.assertEqual(self.tree(), before)
+
+    def test_routine_same_owner_prompt_update_follows_definition_hash_contract(self):
+        source, relative, _ = self.item('routine')
+        self.run_import('routine', source)
+        prompt = (self.local / relative).parent / 'prompt.md'
+        self.assertEqual(self.manifest()['routines'][0]['prompt_sha256'], validators.digest(prompt))
         old_hash = self.manifest()['routines'][0]['sha256']
+        (source.parent / 'prompt.md').write_bytes(b'Updated upstream prompt\n')
         self.run_import('routine', source)
         self.assertEqual(prompt.read_bytes(), b'Updated upstream prompt\n')
         self.assertEqual(self.manifest()['routines'][0]['sha256'], old_hash)
+        self.assertEqual(self.manifest()['routines'][0]['prompt_sha256'], validators.digest(prompt))
+
+    def legacy_routine(self):
+        source, relative, _ = self.item('routine')
+        self.run_import('routine', source)
+        value = self.manifest()
+        del value['routines'][0]['prompt_sha256']
+        hub.write_json(self.local / 'manifest.json', value)
+        return source, (self.local / relative).parent / 'prompt.md'
+
+    def test_legacy_routine_locally_edited_prompt_is_not_overwritten(self):
+        source, prompt = self.legacy_routine()
+        prompt.write_bytes(b'Local prompt edit\n')
+        hub.write_json(self.root / '.hub-store/scan-sources.json',
+                       {'routine/sample': {'prompt': validators.digest(prompt)}})
+        (source.parent / 'prompt.md').write_bytes(b'Updated upstream prompt\n')
+        before = self.tree()
+        output = self.cli('import-routine', source, '--owner', 'maintainer', code=1)
+        self.assertIn('routine prompt differs from its recorded hash', output)
+        self.assertEqual(self.tree(), before)
+
+    def test_legacy_routine_line_ending_only_prompt_edit_is_not_overwritten(self):
+        source, prompt = self.legacy_routine()
+        hub.write_json(self.root / '.hub-store/scan-sources.json',
+                       {'routine/sample': {'prompt': validators.digest(prompt)}})
+        prompt.write_bytes(b'Fixture prompt\r\n')
+        (source.parent / 'prompt.md').write_bytes(b'Updated upstream prompt\n')
+        self.cli('import-routine', source, '--owner', 'maintainer', code=1)
+        self.assertEqual(prompt.read_bytes(), b'Fixture prompt\r\n')
+
+    def test_legacy_routine_adopts_prompt_hash_when_prompt_is_unchanged(self):
+        source, prompt = self.legacy_routine()
+        self.run_import('routine', source)
+        self.assertEqual(self.manifest()['routines'][0]['prompt_sha256'], validators.digest(prompt))
+
+    def test_routine_with_edited_prompt_can_be_removed_and_imported_again(self):
+        source, relative, _ = self.item('routine')
+        self.run_import('routine', source)
+        prompt = (self.local / relative).parent / 'prompt.md'
+        prompt.write_bytes(b'Local prompt edit\n')
+        (source.parent / 'prompt.md').write_bytes(b'Updated upstream prompt\n')
+        self.cli('remove', 'routines', 'sample', '--owner', 'maintainer', '--yes')
+        self.assertIn(b'Local prompt edit\n', [path.read_bytes() for path in (self.root / '.hub-store').rglob('prompt.md')])
+        self.run_import('routine', source)
+        self.assertEqual(prompt.read_bytes(), b'Updated upstream prompt\n')
+
+    def test_manifest_accepts_prompt_sha256_only_as_routine_hex(self):
+        source, _, _ = self.item('routine')
+        self.run_import('routine', source)
+        value = self.manifest()
+        validators.manifest(value)
+        for bad in ('ABC', 1, None):
+            value['routines'][0]['prompt_sha256'] = bad
+            with self.assertRaises(ValueError):
+                validators.manifest(value)
+        value['routines'][0]['prompt_sha256'] = '0' * 64
+        routine = value['routines'].pop()
+        value['rules'] = [{'name': 'sample', 'path': 'rules/sample.md',
+                           **{key: routine[key] for key in ('owner', 'provenance', 'sha256', 'prompt_sha256')}}]
+        with self.assertRaisesRegex(ValueError, 'invalid manifest entry fields'):
+            validators.manifest(value)
 
     def test_rollback_failure_retains_recoverable_original_bytes(self):
         source, relative, _ = self.item('rule')

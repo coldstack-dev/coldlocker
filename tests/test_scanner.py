@@ -166,6 +166,31 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(value['url'], item['upstream']['endpoint'])
         self.assertFalse((self.root / 'config.json').exists())
 
+    def test_openmcp_stdio_import_preserves_client_and_renders_private_environment(self):
+        client = self.home / '.claude.json'
+        args = ['-y', '@open-mcp/fixture@1.0.0']
+        config = {'mcpServers': {'openmcp-fixture': {
+            'command': 'npx', 'args': args, 'env': {'API_KEY': 'synthetic-openmcp-value'},
+        }}}
+        client.write_text(json.dumps(config), encoding='utf-8')
+        before = snapshot(self.home)
+
+        report = self.scan()
+        item = next(item for item in report['items'] if item['name'] == 'openmcp-fixture')
+        self.assertNotIn('synthetic-openmcp-value', json.dumps(report))
+        self.assertEqual(self.apply(report, [item['id']])['counts'], {'imported': 1, 'rejected': 0})
+        self.assertEqual(snapshot(self.home), before)
+
+        path = self.local / 'mcp/servers/openmcp-fixture.json'
+        definition = json.loads(path.read_text(encoding='utf-8'))
+        ref = definition['env']['API_KEY']
+        self.assertTrue(ref.startswith('secret://'))
+        self.assertEqual(self.store.resolve(ref), 'synthetic-openmcp-value')
+        rendered = gateway_render.render(self.root)['mcpServers']['openmcp-fixture']
+        self.assertEqual((rendered['command'], rendered['args']), ('npx', args))
+        self.assertEqual(rendered['env']['API_KEY'], gateway_render.render_value(ref))
+        self.assertNotIn('synthetic-openmcp-value', json.dumps(rendered))
+
     def test_import_idempotent_check_and_canary_private_only(self):
         report = self.scan()
         before = snapshot(self.home)

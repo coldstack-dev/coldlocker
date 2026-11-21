@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Custom modes: `~/.coldlocker/modes.json` maps a mode name to `reminders` and `keep_going`, and a `<mode>:` prompt prefix turns that mode on for the session; `work:` leaves it. A mode cannot change a guard: any other key makes the file invalid and no mode applies. `guards.json` always wins over a mode.
+
+- `chat:` no longer turns off the publication and dispatch guards or chained PreToolUse commands; it only silences injected context and keep-going (#194).
+
 - The publication guard denies `git <word>` and `gh <word>` when the word is not a built-in subcommand, so an alias or extension from git config, gh config, `-c` or `GIT_CONFIG_*` can no longer hide a push or release (#234, #239). The sets come from `tests/builtin_probe.py` and leave out names an alias can shadow, and `git send-pack` and `git http-push`, which push without the word `push` (#243). A glob, brace, variable or command substitution that can stand for git or gh inside another command is denied when what follows looks like a git or gh call. `$'...'` quoting is decoded before words are read, and a bash extended glob is denied.
 
 - The fleet policy layer is now an optional pack. The five owner rules moved from `manifest.json` to `policy-pack.json`, so an install without the pack lists no owner rules. Without the pack, `check`, `doctor`, `link` and `update` skip the instruction consistency check, hook lessons and the hook self-test instead of failing. `checks/validators.py` lists the pack's files in `POLICY_FILES`.

@@ -261,11 +261,12 @@ class SetupServer(HTTPServer):
             validators.require(isinstance(approved, list) and all(isinstance(i, str) for i in approved) and set(approved) <= set(ids), 'invalid approval')
             items = job['content']['items']
             allowed = {i['id'] for i in items if i['importable'] and i['status'] in ('new', 'connect')}
+            allowed |= {i['id'] for i in items if i.get('updatable')}
             allowed |= {i['id'] for i in items if i['status'] == 'needs_review' and i['id'] in approved and not any(f['blocking'] for f in i['review'])}
             validators.require(set(ids) <= allowed, 'invalid selection')
             result = scanner.apply(self.root, job['content'], ids, self.store, self.scan_home,
-                                   self.scan_projects, self.scan_platform, self.scan_env, self.scan_runner, approved)
-            result['rejected'] = sorted(set(ids) - set(result['imported']))
+                                   self.scan_projects, self.scan_platform, self.scan_env, self.scan_runner, approved, update=True)
+            result['rejected'] = sorted(set(ids) - set(result['imported']) - set(result['updated']))
             result['counts']['rejected'] = len(result['rejected'])
             del self.jobs[data['ticket']]
             return result

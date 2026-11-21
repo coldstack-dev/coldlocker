@@ -3152,6 +3152,92 @@
        "uri": "coldlocker://skills/edge-skill/SKILL.md"
       }
      }
+    },
+    {
+     "expected": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+       "content": [
+        {
+         "text": [
+          {
+           "name": "oversized",
+           "owner": "coldlocker",
+           "path": "rules/oversized.md",
+           "provenance": {
+            "origin": "authored",
+            "source_id": "src-154b8ed3c238"
+           },
+           "sha256": "154b8ed3c2383ce429058768595935faf7851b5c38db2b1732594be1d88bc05a"
+          },
+          {
+           "name": "shared-policy",
+           "owner": "coldlocker",
+           "path": "rules/shared-policy.md",
+           "provenance": {
+            "origin": "authored",
+            "source_id": "src-3e5df1b7644f"
+           },
+           "sha256": "3e5df1b7644f3503bb3ed774d381e5d1031de6cf6731f59cb275b83d7e90ca02"
+          }
+         ],
+         "type": "text"
+        }
+       ],
+       "isError": false
+      }
+     },
+     "name": "list rules including oversized rule",
+     "request": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+       "name": "hub_list_rules"
+      }
+     }
+    },
+    {
+     "expected": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": {
+       "content": [
+        {
+         "text": {
+          "files": {},
+          "kind": "rule",
+          "max_bytes": 1048576,
+          "name": "oversized",
+          "omitted": [
+           {
+            "path": "rules/oversized.md",
+            "reason": "size-cap",
+            "size": 1048577
+           }
+          ],
+          "truncated": true
+         },
+         "type": "text"
+        }
+       ],
+       "isError": false
+      }
+     },
+     "name": "get oversized rule",
+     "request": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+       "arguments": {
+        "kind": "rule",
+        "name": "oversized"
+       },
+       "name": "hub_get_item"
+      }
+     }
     }
    ],
    "index": {
@@ -3208,6 +3294,24 @@
       }
      ],
      "rules": [
+      {
+       "files": [],
+       "name": "oversized",
+       "omitted": [
+        {
+         "path": "rules/oversized.md",
+         "reason": "size-cap",
+         "size": 1048577
+        }
+       ],
+       "owner": "coldlocker",
+       "path": "rules/oversized.md",
+       "provenance": {
+        "origin": "authored",
+        "source_id": "src-154b8ed3c238"
+       },
+       "sha256": "154b8ed3c2383ce429058768595935faf7851b5c38db2b1732594be1d88bc05a"
+      },
       {
        "files": [
         {
@@ -3307,11 +3411,11 @@
      ],
      "subagents": []
     },
-    "revision": "6cdbb4f737f38ee75078",
+    "revision": "c0f92955c41c1b39f0e9",
     "schema": 1
    },
    "name": "edge",
-   "revision": "6cdbb4f737f38ee75078"
+   "revision": "c0f92955c41c1b39f0e9"
   }
  ]
 }

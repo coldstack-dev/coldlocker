@@ -1,5 +1,5 @@
 import { $, state, element, on, pendingAuth, plural } from './api.js';
-import { scan, preselected, summary, foundTitle, importItems, updateMeta, routineDetail } from './scan.js';
+import { scan, preselected, summary, foundTitle, inventoryWarnings, importItems, updateMeta, routineDetail } from './scan.js';
 function go(step, group) { document.querySelector(`[data-go="${step}"]${group ? `[data-group="${group}"]` : ''}`).click(); }
 function inventory() {
   const counts = state.status.counts;
@@ -12,6 +12,7 @@ function inventory() {
   $('welcome-title').textContent = total ? `Your locker has ${total} ${total === 1 ? 'thing' : 'things'} in it` : "Let's fill your locker";
   $('welcome-lede').textContent = total ? [state.lastImport && `Imported at ${state.lastImport}.`, examples && `Includes ${plural(examples, 'built-in example')}.`,
     attention ? `${attention} ${attention === 1 ? 'server needs' : 'servers need'} a sign-in before agents can use them.` : 'Your tools are kept in this locker.'].filter(Boolean).join(' ') : foundTitle(state.report) + '.';
+  for (const warning of inventoryWarnings(state.report)) $('welcome-lede').append(element('span', ' ' + warning));
   const examplesIn = keys => keys.reduce((sum, key) => sum + locker[key].examples, 0);
   const names = (...keys) => [keys.flatMap(key => locker[key].imported.map(id => locker[key].details?.[id] ? `${id} (${routineDetail(locker[key].details[id])})` : id)).join(', '), examplesIn(keys) && plural(examplesIn(keys), 'built-in example')].filter(Boolean).join(' · ');
   const auth = state.status.auth || [];

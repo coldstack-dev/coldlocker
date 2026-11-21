@@ -51,6 +51,92 @@ class ScanCLITests(unittest.TestCase):
         self.assertNotIn(CANARY, output + error)
         self.assertEqual(before, (snapshot(self.home), snapshot(self.root)))
 
+    def test_depth_bound_reports_omitted_skill_in_json_and_text(self):
+        base = self.home / '.claude/skills'
+        boundary = base / 'a/b/c/d/boundary-skill'
+        boundary.mkdir(parents=True)
+        (boundary / 'SKILL.md').write_text(
+            '---\nname: boundary-skill\ndescription: Boundary fixture\n---\nBody.\n', encoding='utf-8')
+        nested = base / 'a/b/c/d/outside/nested-skill'
+        nested.parent.mkdir()
+        nested.mkdir()
+        (nested / '__pycache__').mkdir()
+        (nested.parent / 'empty').mkdir()
+        for truncated in (False, True):
+            with self.subTest(truncated=truncated):
+                if truncated:
+                    (nested / 'SKILL.md').write_text(
+                        '---\nname: nested-skill\ndescription: Nested fixture\n---\nBody.\n', encoding='utf-8')
+                code, output, _ = self.command('--json')
+                self.assertEqual(code, 0)
+                report = json.loads(output)
+                names = {item['name'] for item in report['items']}
+                self.assertIn('boundary-skill', names)
+                self.assertNotIn('nested-skill', names)
+                warnings = [row for row in report['incomplete_inventory'] if row['source'] == '~/.claude/skills']
+                _, human, _ = self.command()
+                if truncated:
+                    self.assertEqual(warnings, [{
+                        'source': '~/.claude/skills', 'limit': 5,
+                        'reason': 'reached the depth limit of 5', 'next_step': 'Narrow that folder and scan again.',
+                    }])
+                    self.assertIn('Incomplete inventory: ~/.claude/skills reached the depth limit of 5. Narrow that folder and scan again.', human)
+                else:
+                    self.assertEqual(warnings, [])
+                    self.assertNotIn('Incomplete inventory: ~/.claude/skills', human)
+
+    def test_deep_assets_of_found_skill_do_not_report_depth_truncation(self):
+        skill = self.home / '.claude/skills/asset-fixture'
+        assets = skill / 'assets/a/b/c/d/e'
+        assets.mkdir(parents=True)
+        (assets / 'example.txt').write_text('Local fixture.\n', encoding='utf-8')
+        (skill / 'SKILL.md').write_text(
+            '---\nname: asset-fixture\ndescription: Skill with assets\n---\nBody.\n', encoding='utf-8')
+        code, output, _ = self.command('--json')
+        self.assertEqual(code, 0)
+        report = json.loads(output)
+        self.assertTrue(any(item['kind'] == 'skill' and item['name'] == 'asset-fixture' for item in report['items']))
+        self.assertFalse(any(row['source'] == '~/.claude/skills' for row in report['incomplete_inventory']))
+
+    def test_skill_payload_walk_does_not_report_depth_truncation(self):
+        skill = self.home / '.claude/skills/payload-fixture'
+        assets = skill / 'assets/a/b/c/d/e/f/g/h'
+        assets.mkdir(parents=True)
+        (assets / 'example.txt').write_text('Local fixture.\n', encoding='utf-8')
+        (skill / 'SKILL.md').write_text(
+            '---\nname: payload-fixture\ndescription: Skill with deep assets\n---\nBody.\n', encoding='utf-8')
+        code, output, _ = self.command('--json')
+        self.assertEqual(code, 0)
+        report = json.loads(output)
+        item = next(item for item in report['items'] if item['name'] == 'payload-fixture')
+        self.assertEqual(item['kind'], 'skill')
+        self.assertTrue(item['importable'])
+        self.assertEqual(report['incomplete_inventory'], [])
+
+    def test_deep_sources_of_found_plugin_do_not_report_depth_truncation(self):
+        plugin = self.home / '.claude/plugins/cache/source-fixture'
+        metadata = plugin / '.claude-plugin'
+        metadata.mkdir(parents=True)
+        (metadata / 'plugin.json').write_text('{"name":"source-fixture","version":"1.0.0"}\n', encoding='utf-8')
+        sources = plugin / 'src/a/b/c/d/e/f/g/h/i/j/k'
+        sources.mkdir(parents=True)
+        (sources / 'example.txt').write_text('Local fixture.\n', encoding='utf-8')
+        code, output, _ = self.command('--json')
+        self.assertEqual(code, 0)
+        report = json.loads(output)
+        self.assertTrue(any(item['kind'] == 'plugin' and item['name'] == 'source-fixture' for item in report['items']))
+        self.assertFalse(any(row['source'] == '~/.claude/plugins' for row in report['incomplete_inventory']))
+
+    def test_intentionally_shallow_scans_do_not_report_depth_truncation(self):
+        for relative in ('.t3/userdata/logs/run', '.codex/rules/nested', '.codex/prompts/nested'):
+            folder = self.home / relative
+            folder.mkdir(parents=True)
+            (folder / 'note.md').write_text('Local fixture.\n', encoding='utf-8')
+        code, output, _ = self.command('--json')
+        self.assertEqual(code, 0)
+        sources = {row['source'] for row in json.loads(output)['incomplete_inventory']}
+        self.assertTrue(sources.isdisjoint({'~/.t3/userdata', '~/.codex/rules', '~/.codex/prompts'}), sources)
+
     def test_compact_and_all_views_preserve_json(self):
         _, data, _ = self.command('--json')
         report = json.loads(data)

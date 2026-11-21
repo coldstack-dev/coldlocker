@@ -172,6 +172,12 @@ routine prompts. It works from a source snapshot without Git metadata and
 does not enforce maintainer commit identities or scan unrelated source and
 dependency files. It does not establish hosted connectivity or routine execution.
 In a Git installation it still refuses tracked or unignored private state.
+With the policy pack installed, `doctor` checks Coldlocker's user-level
+`PreToolUse` registrations in Codex `hooks.json` and Claude `settings.json`.
+It reads Codex trust with `hooks/list` using a temporary copy of the hook
+configuration and runs each registered Coldlocker handler's harmless deny probe
+with a temporary home. If Codex reports `modified` or
+`untrusted`, open `/hooks`, review and trust the hook, then start a fresh session.
 Lines in your private `.hub-store/catalog` that match your own
 `.hub-store/private-patterns.txt` are expected there: `doctor` lists them as a
 count in a `NOTE` and passes. The same match in shipped catalog content still
@@ -279,6 +285,14 @@ the selected target by the event handler's configuration. Private source details
 remain in the lesson source; opaque references and sanitized summaries travel with the rule.
 The local exporter and checker are trusted code. These records preserve their
 proof; they are not a cryptographic signature for arbitrary third-party files.
+
+In OpenCode, open the target repository and ask the agent to follow the managed
+rules in `AGENTS.md`. To apply the ColdFix project holdout, set
+`COLDLOCKER_LESSONS` when you run `deliver-rules`. The command checks the target's
+`origin` against `held-back-projects.txt` using the same check as the hook. If a
+project enters the holdout after a lesson was delivered, use `--withdraw` to
+remove the active copy. The core catalog can list and read entries while the
+lesson store is unavailable.
 
 Failed, unsafe, or retired latest revisions are withdrawn automatically by the
 lesson source's event handler. `deliver-rules --target <repo> --rule <name> --withdraw`

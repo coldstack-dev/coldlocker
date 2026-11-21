@@ -8,7 +8,7 @@ The wizard has four physical screens and six navigation destinations: Welcome, S
 2. **Scan.** Results are expanded groups by type (Skills, Routines, MCP servers, Plugins, Connections and Rules); each row names its source agent and path. Groups can be collapsed, and item status stays visible on mobile. The title and sidebar count what was found on this computer, not what is in the locker.
    - **Import all** honors checkbox opt-outs, including in collapsed groups, and first confirms with per-type counts ("Import 2 skills, 1 routine and 1 MCP server?"); declining imports nothing. The button reads "Import 1 item" and, when nothing is ticked, a disabled "Nothing selected".
    - New and connect items start selected. Needs-review rows ([safety](safety.md)) show reasons, start unchecked, import only when ticked, and name any credentials ticking would move to the store; rows with an embedded secret cannot be imported.
-   - Duplicate, already indexed, vendor/plugin-cache, conflict and skipped rows stay disabled with the concrete cause and one next step. Plugin-cache rows name their plugin; built-in vendor rows say "Built in to Codex".
+   - **Update available** rows start unchecked. Review the listed source, then select and confirm the updates you want. Conflicts, duplicates, unchanged catalog items, vendor items and skipped rows stay disabled.
    - **Scan again** refreshes. After import, rows say Imported, checkboxes clear, counts refresh, and the result message (success and rejection counts) scrolls into view and is announced politely.
    - A collapsed **Choose a folder or file instead** fallback offers manual previews (below).
 3. **Sign in.** One table row per server, stacked on mobile, with a legend distinguishing verified, saved, needs sign-in, check failed and no credentials needed. The sidebar and Welcome count the same thing: servers still needing sign-in, plus stored servers whose copy has a credential in its args (shown as "Cannot be used" with the `python3 hub.py scan --import` fix and no Check again button).
@@ -32,7 +32,7 @@ All POSTs need the CSRF token and accept JSON up to 1 MB.
 
 - `GET /api/status` is the one source for locker counts: `counts` per kind (imports plus examples) and `inventory` per kind with imported names and the number of shipped examples.
 - `POST /api/scan` returns the scanner report plus an expiring opaque ticket.
-- `POST /api/scan/import` accepts only `{ticket, ids}`. Paths come from server configuration. It rejects disabled or unknown IDs, calls `scanner.apply` (which re-scans) and consumes the ticket. `scanner.scan` takes an optional `root` to classify already-indexed content against the served locker.
+- `POST /api/scan/import` accepts `{ticket, ids}` and optional `approved` IDs for safety review. It uses the server's scan paths, rejects disabled or unknown IDs, re-scans to validate the selection, and consumes the ticket. The result lists imports and updates under `imported` and `updated`.
 - `POST /api/connect` returns nonsecret snippets and gateway connection info; it stages no merge plan or ticket. `POST /api/connect/write` is removed (404 with a valid CSRF token). Existing config contents never reach the browser.
 - `POST /api/auth/bearer`, `/api/auth/secret`, `/api/auth/secret/remove`, `/api/auth/discover`, `/api/auth/oauth`, `/api/auth/refresh`, `/api/auth/check` and `GET /api/calls` are described below.
 
@@ -109,7 +109,7 @@ Each auth entry keeps its earlier fields and adds `state` (`needs_signin`, `save
 
 The local IBM Plex Sans 400/500/600 and Plex Mono 400 files match the supplied v4 design. Mono is reserved for paths and code; license and provenance are in `ui/fonts/LICENSES.md`. Static routes explicitly whitelist each font with `font/woff2`; arbitrary font paths and symlinked assets are refused. The supplied SVG favicon also has a raster ICO fallback.
 
-Scan progress is indeterminate: the synchronous read-only scanner does not stream partial results or support cancellation. Unreadable files show sanitized reasons, rescan and manual file selection; setup never launches an editor or exposes configuration excerpts. Routine source enablement is display metadata; imports remain paused. Changed-source conflicts keep their existing reviewed update instructions and disabled checkbox.
+Scan progress is indeterminate. Unreadable files show sanitized reasons and offer a rescan or manual file selection. Routine source enablement is display metadata. Imports and updates keep routines disabled.
 
 Connect always includes the selected client’s read-only catalog entry, even while the gateway runs. `POST /api/gateway/stop` requires the setup session’s CSRF token, the same locker root as the gateway runtime, and a locker-managed backend. It uses the existing lifecycle lock, ordinary-path checks and supervisor identity check; Executor must be stopped separately. Start and Stop require user actions. Setup never writes client configurations.
 

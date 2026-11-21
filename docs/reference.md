@@ -1,7 +1,7 @@
 # Import and catalog reference
 
 Short reference for importing content and registering the catalog. Read the
-[vision](../VISION.md) and the [format contract](formats.md) first. Full command
+[overview](OVERVIEW.md) and the [format contract](formats.md) first. Full command
 detail is in [cli.md](cli.md).
 
 ## Install

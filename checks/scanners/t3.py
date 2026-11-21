@@ -12,7 +12,7 @@ def discover(inv):
         for path in (base / 'settings.json', base / 'userdata/settings.json'):
             inv.config('t3', path)
             inv.connections('t3', path)
-        for path in inv.walk(base / 'userdata', depth=1, limit=100):
+        for path in inv.walk(base / 'userdata', depth=1, limit=100, report_depth=False):
             if path.suffix in ('.sqlite', '.sqlite3', '.db'):
                 database(inv, path)
         inv.tasks('t3', base / 'schedules')

@@ -1,9 +1,12 @@
+import asyncio
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from checks.validators import digest
 from test_hub import HubCase, PACK_MISSING
@@ -14,7 +17,107 @@ needs_pack = unittest.skipIf(PACK_MISSING, "policy pack not installed")
 class DoctorTests(HubCase):
     def setUp(self):
         super().setUp()
+        self.environment.update(CODEX_HOME="", CLAUDE_CONFIG_DIR="")
         self.import_skill()
+
+    def test_codex_hook_trust_is_required(self):
+        import hub
+
+        home = self.base / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        if PACK_MISSING:
+            self.assertIn("SKIP: codex hook in force: policy pack not installed", self.cli("doctor"))
+            return
+
+        from hooks.install import hook_command
+
+        command = hook_command(os.sys.executable, os.name == "nt", self.root / "hooks/coldlocker_hook.py",
+                               ("--root", self.root.as_posix()))
+        hooks = codex / "hooks.json"
+        original = json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]}})
+        hooks.write_text(original, encoding="utf-8")
+        config = codex / "config.toml"
+        key = f"{hooks.resolve()}:pre_tool_use:0:0"
+        server = self.base / "app_server.py"
+        server.write_text('''\
+import json, os, sys, tomllib
+from pathlib import Path
+
+home = Path(os.environ["CODEX_HOME"])
+source = home / "hooks.json"
+command = json.loads(source.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+state = tomllib.loads((home / "config.toml").read_text(encoding="utf-8")).get("hooks", {}).get("state", {})
+entry = state.get(f"{source.resolve()}:pre_tool_use:0:0", {})
+digest = entry.get("trusted_hash")
+trust = "untrusted" if digest is None else "trusted" if digest == "fixture-current" else "modified"
+assert json.loads(sys.stdin.readline())["method"] == "initialize"
+print('{"id":1,"result":{}}', flush=True)
+assert json.loads(sys.stdin.readline()) == {"method": "initialized"}
+request = json.loads(sys.stdin.readline())
+assert request["method"] == "hooks/list" and request["params"]["cwds"] == [str(Path.cwd())]
+hook = {"eventName": "preToolUse", "handlerType": "command", "command": command,
+        "enabled": entry.get("enabled", True), "trustStatus": trust, "matcher": None}
+print(json.dumps({"id": request["id"], "result": {"data": [{"hooks": [hook], "errors": []}]}}), flush=True)
+''', encoding="utf-8")
+        spawn = asyncio.create_subprocess_exec
+
+        async def fixture_app_server(executable, subcommand, *args, **kwargs):
+            self.assertEqual((executable, subcommand), ("codex", "app-server"))
+            self.assertNotEqual(Path(kwargs["env"]["CODEX_HOME"]), codex)
+            return await spawn(os.sys.executable, "-B", str(server), **kwargs)
+
+        with patch.dict(os.environ, {**self.environment, "CODEX_HOME": str(codex)}, clear=True):
+            with (patch.object(hub, "ROOT", self.root), patch("sys.stdout", new_callable=io.StringIO) as output,
+                  patch.object(asyncio, "create_subprocess_exec", new=fixture_app_server)):
+                for digest, enabled, code, message in (
+                    ("fixture-old", True, 1, "modified"), (None, True, 1, "untrusted"),
+                    ("fixture-current", False, 1, "disabled"), ("fixture-current", True, 0, "PASS: codex hook in force"),
+                ):
+                    with self.subTest(digest=digest, enabled=enabled):
+                        state = f"[hooks.state.{json.dumps(key)}]\nenabled = {json.dumps(enabled)}\n"
+                        if digest is not None:
+                            state += f"trusted_hash = {json.dumps(digest)}\n"
+                        config.write_text(state, encoding="utf-8")
+                        output.seek(0)
+                        output.truncate()
+                        result = hub.doctor(None)
+                        self.assertEqual(result, code, output.getvalue())
+                        self.assertIn(message, output.getvalue())
+                        if code:
+                            self.assertIn("/hooks", output.getvalue())
+                        self.assertEqual(config.read_text(encoding="utf-8"), state)
+        self.assertEqual(hooks.read_text(encoding="utf-8"), original)
+        self.assertEqual(set(codex.iterdir()), {hooks, config})
+
+    def test_claude_requires_registration_and_a_denial(self):
+        home = self.base / "home"
+        settings = home / ".claude/settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text("{}", encoding="utf-8")
+        if PACK_MISSING:
+            self.assertIn("SKIP: claude hook in force: policy pack not installed", self.cli("doctor"))
+            return
+
+        from hooks.install import hook_command
+
+        self.assertIn("SKIP: claude hook in force: Coldlocker PreToolUse hook has not been installed", self.cli("doctor"))
+        settings.with_name("settings.json.coldlocker-receipt.json").write_text("{}", encoding="utf-8")
+        self.assertIn("FAIL: claude hook in force: Coldlocker PreToolUse hook is not registered",
+                      self.cli("doctor", code=1))
+
+        script = self.root / "hooks/coldlocker_hook.py"
+        command = hook_command(os.sys.executable, False, script, ("--root", self.root.as_posix()))
+        config = json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash|Edit", "hooks": [
+            {"type": "command", "command": command}]}]}})
+        settings.write_text(config, encoding="utf-8")
+        self.assertIn("PASS: claude hook in force", self.cli("doctor"))
+        self.assertEqual(settings.read_text(encoding="utf-8"), config)
+        self.assertEqual(list(home.rglob("decisions.jsonl")), [])
+
+        script.write_text("print('{}')\n", encoding="utf-8")
+        self.assertIn("FAIL: claude hook in force: harmless deny probe did not return the expected denial",
+                      self.cli("doctor", code=1))
 
     @needs_pack
     def test_installed_hook_lessons_status(self):

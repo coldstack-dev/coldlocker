@@ -79,18 +79,37 @@ def history_base(root, collection, item_name):
     return base
 
 
-def keep(root, collection, item_name, held):
+def keep(root, collection, item_name, held, rollback):
     base = history_base(root, collection, item_name)
+    created = []
+
+    def remove_empty_directories():
+        for directory in reversed(created):
+            with contextlib.suppress(OSError):
+                directory.rmdir()
+
+    rollback.callback(remove_empty_directories)
     directory = root
     for part in base.relative_to(root).parts:
         directory = directory / part
-        directory.mkdir(mode=0o700, exist_ok=True)
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            if not directory.is_dir():
+                raise
+        else:
+            created.append(directory)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    shutil.copytree(held, base / stamp)
+    archive = base / stamp
+    with tempfile.TemporaryDirectory(prefix=".pending-", dir=base) as pending:
+        copy = Path(pending) / "copy"
+        shutil.copytree(held, copy)
+        copy.rename(archive)
+        rollback.callback(shutil.rmtree, archive, ignore_errors=True)
 
 
 @contextlib.contextmanager
-def retained(root, collection, item_name, paths):
+def retained(root, collection, item_name, paths, *, required=False):
     paths = list(paths)
     if not paths:
         yield
@@ -106,11 +125,19 @@ def retained(root, collection, item_name, paths):
                 shutil.copytree(path, copy)
             else:
                 shutil.copyfile(path, copy)
-        yield
-        try:
-            keep(root, collection, item_name, held)
-        except OSError as error:
-            print(f"Warning: published, but could not keep the previous copy under {HISTORY}/: {error}", file=sys.stderr)
+        with contextlib.ExitStack() as rollback:
+            if not required:
+                yield
+            try:
+                keep(root, collection, item_name, held, rollback)
+            except OSError as error:
+                if required:
+                    raise ValueError(f"could not save removal history under {HISTORY}/: {error}") from error
+                print(f"Warning: published, but could not keep the previous copy under {HISTORY}/: {error}", file=sys.stderr)
+                return
+            if required:
+                yield
+            rollback.pop_all()
 
 
 def read_links(root):
@@ -192,7 +219,7 @@ def remove(args, hub, root=None):
                 operations.extend(hub.stage_path_bindings(root, staged_root, name, {}, True, snapshots,
                                                           hub.read_json(destination)))
         operations.append((catalog / "manifest.json", staged_manifest))
-        with retained(root, collection, name, changed_targets(operations[:len(targets)])):
+        with retained(root, collection, name, (path for path in targets if path.exists()), required=True):
             hub.publish_import(operations, snapshots)
     print(f"Removed {collection}: {name}")
     if singular == "routine":

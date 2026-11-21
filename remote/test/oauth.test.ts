@@ -131,6 +131,33 @@ describe("authorize", () => {
     expect(response.status).toBe(403);
     expect(response.headers.get("Location")).toBeNull();
   });
+
+  it("rejects a signed non-owner approving valid catalog consent", async () => {
+    const { client_id } = await register(env);
+    const { challenge } = await pkcePair();
+    const ownerJwt = await accessJwt(env);
+    const url = authorizeUrl(client_id, challenge);
+    const consent = await get(env, url, { headers: { "Cf-Access-Jwt-Assertion": ownerJwt } });
+    expect(consent.status).toBe(200);
+    const handle = /name="handle" value="([^"]+)"/.exec(await consent.text())?.[1] ?? "";
+    expect(handle).not.toBe("");
+    const cookie = cookiesFrom(consent);
+    expect(cookie).not.toBe("");
+
+    const requestApproval = (jwt: string) => get(env, url, {
+      method: "POST",
+      headers: { "Cf-Access-Jwt-Assertion": jwt, Cookie: cookie },
+      body: new URLSearchParams({ handle, decision: "approve" })
+    });
+    const nonOwnerJwt = await accessJwt(env, { email: "visitor@example.com" });
+    const refused = await requestApproval(nonOwnerJwt);
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get("Location")).toBeNull();
+
+    const approved = await requestApproval(ownerJwt);
+    expect(approved.status).toBe(302);
+    expect(new URL(approved.headers.get("Location") ?? "").searchParams.get("code")).toBeTruthy();
+  });
 });
 
 describe("token endpoint", () => {

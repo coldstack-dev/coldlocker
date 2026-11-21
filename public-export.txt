@@ -45,6 +45,7 @@ docs/IMPORT-PROMPT.md
 docs/OVERVIEW.md
 docs/acceptance.md
 docs/agents-sync.md
+docs/capability-matrix.md
 docs/catalog-search.md
 docs/cli.md
 docs/clients.md

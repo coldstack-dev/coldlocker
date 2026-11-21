@@ -33,6 +33,9 @@ entries or resolve `secret://` references. To verify the bridge, have two bots
 read the same harmless skill and compare its hash. Connecting creates no hosted
 skill and activates no routine.
 
+After a local catalog update, [publish the new snapshot](self-host.md#4-use-it-and-keep-it-current)
+before asking the bot to fetch the current item.
+
 ## Recurring work
 
 Preview a routine for the Hosted Bot runner:

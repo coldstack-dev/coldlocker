@@ -44,6 +44,38 @@ class LocalCatalogProofTests(unittest.TestCase):
         self.assertFalse((fixture.root / 'config.json').exists())
         self.assertFalse((fixture.root / '.git').exists())
 
+    def test_codex_catalog_fallback_when_executor_is_unreachable(self):
+        fixture = self.fixture()
+        url = 'http://127.0.0.1:4788/mcp'
+        (fixture.root / 'config.json').write_text(json.dumps({
+            'gateway': {'backend': 'executor', 'executor': {'url': url, 'headers': {}}},
+        }), encoding='utf-8')
+        fixture.cli('import-skill', fixture.skill, '--owner', 'fixture')
+
+        status = proof.run([sys.executable, 'gateway.py', 'status'], fixture.root, fixture.env, expected=1)
+        self.assertEqual(json.loads(status.stdout), {
+            'backend': 'executor', 'status': 'unreachable', 'url': url, 'tools': [],
+        })
+
+        fixture.cli('connect', '--agent', 'codex')
+        fixture.cli('connect', '--agent', 'codex', '--write', '--yes')
+        servers = proof.tomllib.loads(fixture.codex.read_text(encoding='utf-8'))['mcp_servers']
+        self.assertEqual(set(servers), {'unrelated', 'coldlocker'})
+        catalog = servers['coldlocker']
+        fixture.configured_endpoint(catalog)
+        result = fixture.rpc([
+            fixture.initialize(), {'method': 'notifications/initialized'},
+            {'id': 2, 'method': 'tools/call', 'params': {
+                'name': 'hub_get_item', 'arguments': {'kind': 'skill', 'name': 'catalog-sample'},
+            }},
+        ], server=catalog)[-1]
+        self.assertFalse(result.get('isError', False))
+        files = json.loads(result['content'][0]['text'])['files']
+        entry = next(text for path, text in files.items() if path.endswith('/SKILL.md'))
+        self.assertIn('Read references/guide.md.', entry)
+        self.assertEqual([text for path, text in files.items() if path.endswith('/references/guide.md')],
+                         ['Fixture guide version one.\n'])
+
     @unittest.skipIf(sys.platform == 'win32',
                      'Windows aliased-temp history fixture unresolved; see docs/release.md')
     def test_symlinked_tmpdir_accepts_canonical_fixture_endpoint(self):

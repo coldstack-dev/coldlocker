@@ -1,3 +1,5 @@
+import json
+import subprocess
 import unittest
 
 from tests import remote_parity
@@ -19,6 +21,25 @@ class GoldenParityTests(unittest.TestCase):
         capped = next(case for case in edge["cases"] if case["name"].startswith("get skill with omitted"))
         payload = capped["expected"]["result"]["content"][0]["text"]
         self.assertTrue(payload["truncated"])
+
+    def test_worker_returns_local_truncation_for_oversized_rule(self):
+        _, edge = remote_parity.generate()["fixtures"]
+        case = next(case for case in edge["cases"] if case["name"] == "get oversized rule")
+        expected = case["expected"]["result"]["content"][0]["text"]
+        read = """
+import { readFileSync } from "node:fs";
+import { itemContents } from "./remote/src/catalog.ts";
+const index = JSON.parse(readFileSync(0, "utf8"));
+const result = await itemContents({}, index, "rule", "oversized");
+process.stdout.write(JSON.stringify(result));
+"""
+        result = subprocess.run(
+            ["node", "--experimental-transform-types", "--input-type=module", "-e", read],
+            cwd=remote_parity.ROOT, input=json.dumps(edge["index"]),
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), expected)
 
 
 if __name__ == "__main__":

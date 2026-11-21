@@ -49,27 +49,27 @@ connected agents remember its path. Other ways to get the source are in the
    `hub-discover` and your imports; [skill packs](docs/cli.md#skill-packs) add the
    shipped skills indexed in [manifest.json](manifest.json).
 
-4. **Connect.** On Linux and macOS the first line starts the [gateway](docs/gateway.md)
-   (Node 20+) so the agents `connect` writes can call your imported MCP servers;
-   `connect` reminds you while it is stopped. `connect` previews; `--write` applies
-   with backups. The client you imported from may list each tool twice; see
-   [imported MCP servers](docs/clients.md#imported-mcp-servers). On Windows, without the
-   [gateway prerequisites](docs/install.md#optional-shared-authenticated-tools) or with no
-   imported MCP servers, skip the first line; on Windows `--write` then adds each
-   imported stdio server to every client it writes.
+4. **Connect.** Preview the client entries, then apply them with backups.
 
    ```sh
-   python3 gateway.py install && python3 gateway.py prepare && python3 gateway.py start
    python3 hub.py connect --agent claude codex
    python3 hub.py connect --agent claude codex --write --yes
    claude mcp list
    ```
 
-   `claude mcp list` should show `coldlocker` as connected. For Cursor, OpenCode
-   and other local clients, use the [client instructions](docs/clients.md); manual
-   examples write your installation directory as `<HUB_DIR>`. Hosted bots, such as
-   the [Hosted Bot bridge](docs/hosted-bot-bootstrap.md), connect to a
-   [self-hosted](docs/self-host.md) read-only [remote catalog](docs/remote.md).
+   - **Gateway running.** Apply `coldlocker-gateway`, restart the client, and
+     call an imported tool.
+   - **Gateway unavailable.** Apply `coldlocker` to browse the catalog. To run
+     imported tools, follow the gateway setup command in the preview. Check
+     `python3 gateway.py status`, then preview and apply the entries again.
+   - **Native stdio (Windows).** Apply the entries, restart the client, and call
+     the imported stdio tool through its server's catalog name.
+
+   `claude mcp list` should show `coldlocker` as connected. The
+   [client guide](docs/clients.md) covers Cursor, OpenCode, and manual
+   setup with `<HUB_DIR>`. See [imported servers](docs/clients.md#imported-mcp-servers)
+   for credentials and duplicate entries. Hosted bots use a read-only
+   [remote catalog](docs/remote.md). See [Hosted Bot setup](docs/hosted-bot-bootstrap.md).
 
 5. **Use.** Ask a connected agent:
 
@@ -83,9 +83,13 @@ connected agents remember its path. Other ways to get the source are in the
    imported MCP servers behind one endpoint, and [Composio](docs/composio.md) MCPs
    stay in Composio.
 
-6. **Update.** Edit the original item and run the import again; Coldlocker keeps
-   the old copy in `.hub-store/history/`. A skill the Claude scan imported keeps its
-   origin: `python3 hub.py import-skill <SKILL_DIRECTORY> --origin scan-claude`.
+6. **Update.** Edit the original source and scan again. In Setup, review the source
+   shown next to **Update available**, then select and confirm the items to update.
+   From the CLI, take the IDs from `python3 hub.py scan` and run
+   `python3 hub.py scan --import --update --only <ID>...`. See the
+   [scan update guide](docs/scan.md#update) for conflicts and manual imports.
+   Connected local clients read the new content on their next fetch. For hosted
+   clients, [publish the updated catalog](docs/self-host.md#4-use-it-and-keep-it-current).
    `python3 hub.py remove <kind> <name> --yes` removes an import. To update
    Coldlocker itself, run `python3 hub.py update` ([upgrade guide](docs/upgrade.md)).
 
@@ -107,9 +111,9 @@ and full unittest discovery. These checks do not approve publication.
 
 ## Reference
 
-- [Overview](docs/OVERVIEW.md) and [vision](VISION.md)
+- [Overview and product goal](docs/OVERVIEW.md). Maintainer checkouts also include `VISION.md`.
 - [Install details](docs/install.md), [commands](docs/cli.md), [imports and links](docs/reference.md), [file formats](docs/formats.md)
 - [Client setup](docs/clients.md), [capability matrix](docs/capability-matrix.md), [wizard](docs/ui.md), [Executor](docs/executor-connector.md), [agents sync](docs/agents-sync.md)
 - [Related projects](docs/related.md), [catalog search experiment](docs/catalog-search.md), [acceptance](docs/acceptance.md)
 - [Changelog](CHANGELOG.md) and [security reporting](SECURITY.md)
-- Optional owner policy pack, not needed for anything above: [hooks](docs/hooks.md), [core and policy split](docs/core-vs-policy.md)
+- [Core and policy split](docs/OVERVIEW.md#core-and-policy-split) and [optional hooks](docs/hooks.md)

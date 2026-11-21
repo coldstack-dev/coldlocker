@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import sys
 import tempfile
 
@@ -49,7 +50,8 @@ def apply(root, report, selected_ids, store, home, projects=(), platform=None, e
     def updating(item):
         return update and item.get('updatable', False)
 
-    allowed = {i['id'] for i in report['items'] if (i['status'] in ('new', 'connect') and i['importable']) or cleared(i) or updating(i)}
+    updates = {i['id'] for i in report['items'] if updating(i)}
+    allowed = {i['id'] for i in report['items'] if (i['status'] in ('new', 'connect') and i['importable']) or cleared(i)} | updates
     imported = []
     updated = []
     sources = scan_sources(root)
@@ -74,6 +76,8 @@ def apply(root, report, selected_ids, store, home, projects=(), platform=None, e
         identity = item['id']
         if identity not in selected or identity not in allowed or not (item['importable'] or cleared(item) or updating(item)):
             continue
+        if updating(item) != (identity in updates):
+            continue
         payload, secrets = inventory.payloads[identity]
         kind = item['kind']
         name = item['name']
@@ -97,6 +101,10 @@ def apply(root, report, selected_ids, store, home, projects=(), platform=None, e
                             target.write_bytes(text.encode('utf-8'))
                     else:
                         path = payload
+                        if updating(item):
+                            path = temporary / name
+                            shutil.copytree(payload, path, symlinks=True, ignore=shutil.ignore_patterns('__pycache__'))
+                            validators.require(tree_hash(path) == item['content_hash'], 'skill changed after the scan; scan again')
                     skill_package(path)
                 elif kind in ('rule', 'subagent', 'command'):
                     path = temporary / (name + '.md')
@@ -110,8 +118,9 @@ def apply(root, report, selected_ids, store, home, projects=(), platform=None, e
                 for secret_name, value in secrets.items():
                     store.put(secret_name, value)
                 import_item(SimpleNamespace(command='import-' + ('mcp' if kind == 'mcp_server' else kind), path=str(path),
-                                            owner=owner, origin='scan-' + item['agent'], name=name, approve_risky=True,
-                                            path_bindings=inventory.path_bindings.get(identity, {})), root)
+                                            owner=owner, origin='scan-' + item['agent'], name=name, approve_risky=not updating(item),
+                                            path_bindings=inventory.path_bindings.get(identity, {}),
+                                            require_existing=updating(item)), root)
             (updated if updating(item) else imported).append(identity)
             record(item)
         except ERRORS as error:
@@ -157,7 +166,9 @@ def human(report, all_items=False, missing=None, hint=False):
         print('Not scanned (no importer): ' + ', '.join(f"{a['name']} {a['path']}" for a in unscanned['agents']))
         print('  ' + unscanned['next_step'])
     for incomplete in report.get('incomplete_inventory', []):
-        print(f"Incomplete inventory: {incomplete['source']} reached the limit of {incomplete['limit']} entries. Narrow that folder and scan again.")
+        reason = incomplete.get('reason', f"reached the limit of {incomplete['limit']} entries")
+        next_step = incomplete.get('next_step', 'Narrow that folder and scan again.')
+        print(f"Incomplete inventory: {incomplete['source']} {reason}. {next_step}")
     changed = sum(bool(item.get('updatable')) for item in report['items'])
     if changed:
         print(f'{changed} item(s) changed in the source they were imported from; add --import --update --yes to this scan command to update them all')

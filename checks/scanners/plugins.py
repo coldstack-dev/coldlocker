@@ -1,7 +1,7 @@
 from checks import validators
 from importers import json_object
 
-from .common import ERRORS, read, slug
+from .common import ERRORS, plugin_manifest, read, slug
 
 
 def plugin_name(path):
@@ -83,8 +83,8 @@ class PluginMixin:
             self.failed(agent, 'plugin', path)
 
     def cached_plugins(self, agent, base):
-        for path in self.walk(base, depth=9):
-            if path.name != 'plugin.json' or (agent != 'grok' and path.parent.name not in ('.codex-plugin', '.claude-plugin')):
+        for path in self.walk(base, depth=9, package_agent=agent):
+            if not plugin_manifest(path, agent):
                 continue
             try:
                 value = json_object(read(path).decode())
@@ -98,6 +98,6 @@ class PluginMixin:
     def plugin_root(self, agent, plugin_root):
         self.packages(agent, plugin_root, vendor=True)
         self.cached_plugins(agent, plugin_root)
-        for path in self.walk(plugin_root, depth=12):
+        for path in self.walk(plugin_root, depth=12, package_agent=agent):
             if path.name in ('.mcp.json', 'mcp.json'):
                 self.config(agent, path, ownership='plugin_cache')

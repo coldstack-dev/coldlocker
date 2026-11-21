@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 from checks import validators
-from checks.scan import findings
+from checks.scan import findings, json_strings, screen_private_patterns
 from gateway_render import render_server, write_output
 from importers import LIMIT, json_object, skill_package
 from mcp_endpoint import repo_file
@@ -197,6 +197,19 @@ def import_project(target, root, owner='coldlocker', approve_risky=False):
     return 0
 
 
+def export_skill_texts(directory, relative):
+    yield relative.as_posix()
+    for path in directory.iterdir():
+        if path.name == '__pycache__':
+            continue
+        child = relative / path.name
+        if path.is_dir():
+            yield from export_skill_texts(path, child)
+        else:
+            yield child.as_posix()
+            yield path.read_bytes().decode('utf-8', errors='replace')
+
+
 def export_project(target, root, gateway_url=None, check=False):
     target, root = project(target), project(root)
     manifest = validators.layered(root, validators.shipped(root, load))
@@ -247,15 +260,24 @@ def export_project(target, root, gateway_url=None, check=False):
         if not unchanged(destination, source):
             pending.append((source, destination))
     path = ordinary(target / '.agents/agents.json')
-    changed = not path.exists() or original != value or bool(pending)
+    registry = json.dumps(value, indent=2) + '\n' if not path.exists() or original != value else None
+
+    def outbound_texts():
+        if registry is not None:
+            yield registry
+            yield from json_strings(value)
+        for source, destination in pending:
+            yield from export_skill_texts(source, Path(destination.name))
+
+    screen_private_patterns(root, outbound_texts())
     if check:
-        return 2 if changed else 0
+        return 2 if registry is not None or pending else 0
     for source, destination in pending:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination, ignore=shutil.ignore_patterns('__pycache__'))
-    if not path.exists() or original != value:
+    if registry is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_output(path, json.dumps(value, indent=2) + '\n')
+        write_output(path, registry)
     print('agents export complete; source definitions only, Store values never resolved')
     return 0
 

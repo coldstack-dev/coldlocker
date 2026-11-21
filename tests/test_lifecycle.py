@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -136,7 +137,6 @@ class RemoveTests(LifecycleCase):
     def test_remove_refuses_symlinked_catalog_skill_and_preserves_source(self):
         self.import_skill()
         destination = self.local / "skills/sample"
-        import shutil
         shutil.rmtree(destination)
         destination.symlink_to(self.source, target_is_directory=True)
         before = (self.source / "SKILL.md").read_bytes()
@@ -183,6 +183,44 @@ class RemoveTests(LifecycleCase):
         output = self.run_hub("remove", "routines", "nightly", "--owner", "maintainer", "--yes")
         self.assertIn("notes.txt", output)
         self.assertEqual(sorted(p.name for p in (self.local / "routines/nightly").iterdir()), ["notes.txt"])
+
+    def test_remove_routine_can_retry_after_history_write_failure(self):
+        self.cli("import-routine", self.routine())
+        routine = self.local / "routines/nightly"
+        definition = (routine / "routine.json").read_bytes()
+        manifest = (self.local / "manifest.json").read_bytes()
+        history = self.root / ".hub-store/history/routines/nightly"
+        args = SimpleNamespace(kind="routine", name="nightly", owner="maintainer", yes=True)
+        copytree = shutil.copytree
+
+        def fail_history_copy(source, destination, *args, **kwargs):
+            destination = Path(destination)
+            if history in destination.parents:
+                destination.mkdir()
+                (destination / "partial").write_bytes(b"partial copy")
+                raise OSError("disk full")
+            return copytree(source, destination, *args, **kwargs)
+
+        with patch.object(shutil, "copytree", fail_history_copy), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                lifecycle.remove(args, hub, self.root)
+            except ValueError as error:
+                self.assertIn("could not save removal history", str(error))
+                self.assertIn("disk full", str(error))
+            else:
+                self.fail(f"History write failure returned success; prompt exists: {(routine / 'prompt.md').exists()}")
+        self.assertEqual((self.local / "manifest.json").read_bytes(), manifest)
+        self.assertEqual((routine / "routine.json").read_bytes(), definition)
+        self.assertEqual((routine / "prompt.md").read_bytes(), b"Fixture prompt\n")
+        self.assertFalse(history.exists())
+
+        self.run_hub("remove", "routine", "nightly", "--owner", "maintainer", "--yes")
+        self.assertEqual(self.manifest()["routines"], [])
+        self.assertFalse(routine.exists())
+        kept, = history.iterdir()
+        self.assertEqual((kept / "routines/nightly/routine.json").read_bytes(), definition)
+        self.assertEqual((kept / "routines/nightly/prompt.md").read_bytes(), b"Fixture prompt\n")
 
     def test_remove_clears_source_path_bindings(self):
         source = self.mcp()

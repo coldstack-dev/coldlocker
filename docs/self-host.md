@@ -87,11 +87,14 @@ used locally. Each client signs in separately to the same catalog URL.
 ## 4. Use it and keep it current
 
 Ask a connected agent to fetch a skill or routine by name and follow its current
-instructions. To update the library, edit the original source and re-import it
-with the same owner and origin. Local readers see the import. Repeat the
-publication commands above for hosted readers, then ask both agents to fetch
-the changed item. Keep one maintained source instead of editing copies in each
-agent.
+instructions. Edit the original source. For scanned items, [preview and select
+the update](scan.md#update). For manual imports, re-import with the same owner
+and origin. Local clients see the update on their next fetch.
+
+For hosted clients, run `python3 hub.py publish-remote --include-local --dry-run`
+and review the preview. Then run
+`python3 hub.py publish-remote --include-local --via wrangler --yes` to publish
+the new snapshot. Ask the hosted client to fetch the updated item.
 
 A routine is an instruction package. Asking an agent to follow it works without
 creating a schedule. If you want automatic timing, use the selected agent's

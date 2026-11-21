@@ -45,6 +45,7 @@ def extend_edge(base):
     for letter in "abc":
         write(skill / f"big/{letter}.txt", f"{letter}-line of padding text\n" * 19600)
     write(skill / "huge.txt", "h-line of padding text\n" * 70000)
+    write(base / "rules/oversized.md", "x" * (mcp_endpoint.MAX_ITEM_BYTES + 1))
     seal(base)
 
 
@@ -134,6 +135,8 @@ EDGE_REQUESTS = [
     ("get skill with omitted and capped files", {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "hub_get_item", "arguments": {"kind": "skill", "name": "edge-skill"}}}),
     ("read within the cap", {"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": "coldlocker://skills/edge-skill/big/a.txt"}}),
     ("read skill main", {"jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": {"uri": "coldlocker://skills/edge-skill/SKILL.md"}}),
+    ("list rules including oversized rule", {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "hub_list_rules"}}),
+    ("get oversized rule", {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "hub_get_item", "arguments": {"kind": "rule", "name": "oversized"}}}),
 ]
 
 BIG_TEXTS = {}

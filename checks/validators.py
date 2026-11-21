@@ -34,6 +34,8 @@ POLICY_FILES = (
     "models.yaml", POLICY_PACK, "rules/coldbox-verification.md", "rules/merge-when-proven.md",
     "rules/model-routing.md", "rules/shared-policy.md", "rules/verify-before-merge.md",
     "tests/fixtures/guard_corpus.json", "tests/fixtures/guard_corpus.md", "tests/test_auto_pick.py", "tests/test_codex_findings.py",
+    "tests/test_coldfix_lesson_06c7bfbb4a42.py", "tests/test_coldfix_lesson_2ea2b498a47b.py",
+    "tests/test_coldfix_lesson_48ef3c4275a9.py", "tests/test_coldfix_lesson_b2e04f1901f2.py",
     "tests/test_coldlocker_hook.py", "tests/test_coldrelease_pass.py", "tests/test_consistency_check.py", "tests/test_context_budget.py",
     "tests/test_decision_replay.py", "tests/test_drift_check.py", "tests/test_guard_replay.py",
     "tests/test_hook_aliases.py", "tests/test_hooks.py", "tests/test_hub_model.py", "tests/test_live_coldstack.py",
@@ -98,8 +100,13 @@ def manifest(value):
         require(isinstance(entries, list), "manifest collections must be lists")
         names = []
         for entry in entries:
-            require(isinstance(entry, dict) and set(entry) == {key, "path", "owner", "provenance", "sha256"},
+            fields = {key, "path", "owner", "provenance", "sha256"}
+            require(isinstance(entry, dict) and fields <= set(entry) <=
+                    fields | ({"prompt_sha256"} if collection == "routines" else set()),
                     "invalid manifest entry fields")
+            require("prompt_sha256" not in entry or
+                    isinstance(entry["prompt_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", entry["prompt_sha256"]),
+                    "invalid prompt_sha256")
             names.append(name(entry[key]))
             relative_path(entry["path"])
             expected = {"skills": f"skills/{entry[key]}", "rules": f"rules/{entry[key]}.md",
