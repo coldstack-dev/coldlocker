@@ -24,7 +24,7 @@ import executor_connector
 
 ROOT = Path(__file__).resolve().parent
 PORT = 43871
-RUNTIME_PINS = {'@modelcontextprotocol/client': '2.3.0', 'hono': '4.13.11', '@hono/node-server': '2.1.3',
+RUNTIME_PINS = {'@modelcontextprotocol/client': '2.3.0', 'hono': '4.13.16', '@hono/node-server': '2.1.6',
                 'follow-redirects': '1.16.2'}
 UPGRADE_MINIMUMS = {'@modelcontextprotocol/client': (2, 0, 0), 'hono': (4, 12, 4), '@hono/node-server': (1, 19, 9),
                     'follow-redirects': (1, 16, 0)}

@@ -45,13 +45,15 @@ Pinned versions (tracked overrides in `gateway/package.json`):
   requests, in client 2.0.0 through 2.2.0) and GHSA-6qxp-vccf-f47h. The client now
   defaults to same-origin redirects; configure the final upstream URL if a server
   redirects elsewhere. No permissive override is enabled.
-- **Hono 4.13.11**, which fixes
+- **Hono 4.13.16**, which includes the fix for
   [GHSA-5r4p-p66f-jhc7](https://github.com/advisories/GHSA-5r4p-p66f-jhc7)
   (double decoding that could bypass middleware on static-file paths).
+- `@hono/node-server` **2.1.6**.
 
-To upgrade an installation with an older client (2.0.x to 2.2.x) or Hono 4.12.4
-through 4.13.10, stop the gateway, then run `python3 gateway.py install`. The adapter
-refuses to launch the vulnerable runtime and prints this command. The previous
+To upgrade an installation with an older client (2.0.x to 2.2.x), Hono 4.12.4
+through 4.13.15, or `@hono/node-server` 1.19.9 through 2.1.5, stop the gateway,
+then run `python3 gateway.py install`. The adapter refuses to launch the
+vulnerable runtime and prints this command. The previous
 directory, including unfamiliar files, is preserved as
 `.scratch/mcphub-runtime.backup-<opaque>/` before the validated replacement is
 switched in; Store, gateway settings and client configs are untouched. A failed

@@ -32,7 +32,7 @@ class InstallTests(unittest.TestCase):
         for name in ('package.json', 'package-lock.json'):
             shutil.copy(REPOSITORY / 'gateway' / name, self.root / 'gateway' / name)
 
-    def package(self, version=gateway.VERSION, complete=True, client_version='2.3.0', hono_version='4.13.11', node_server_version='2.1.3',
+    def package(self, version=gateway.VERSION, complete=True, client_version='2.3.0', hono_version='4.13.16', node_server_version='2.1.6',
                 follow_redirects_version='1.16.2', prefix=None):
         package = gateway.runtime_package(prefix)
         package.mkdir(parents=True)
@@ -82,7 +82,7 @@ class InstallTests(unittest.TestCase):
         manifest = json.loads((REPOSITORY / 'gateway/package.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest['dependencies'], {'@samanhappy/mcphub': gateway.VERSION})
         self.assertEqual(manifest['overrides'], gateway.RUNTIME_PINS)
-        self.assertEqual(gateway.RUNTIME_PINS, {'@modelcontextprotocol/client': '2.3.0', 'hono': '4.13.11', '@hono/node-server': '2.1.3',
+        self.assertEqual(gateway.RUNTIME_PINS, {'@modelcontextprotocol/client': '2.3.0', 'hono': '4.13.16', '@hono/node-server': '2.1.6',
                                                 'follow-redirects': '1.16.2'})
         lock = json.loads((REPOSITORY / 'gateway/package-lock.json').read_text(encoding='utf-8'))
         self.assertEqual(lock['lockfileVersion'], 3)
@@ -164,8 +164,8 @@ class InstallTests(unittest.TestCase):
     @patch('gateway.check_node')
     @patch('gateway.prerequisite')
     def test_fixed_client_with_stale_hono_is_refused_and_upgraded(self, prerequisite, node):
-        self.package(hono_version='4.13.7')
-        with self.assertRaisesRegex(gateway.SetupError, 'hono 4.13.11.*gateway.py install'):
+        self.package(hono_version='4.13.11', node_server_version='2.1.3')
+        with self.assertRaisesRegex(gateway.SetupError, 'hono 4.13.16.*gateway.py install'):
             gateway.check_runtime()
         self.assertFalse(gateway.startable())
         def execute(argv, **kwargs):
@@ -177,9 +177,9 @@ class InstallTests(unittest.TestCase):
         gateway.check_runtime()
         backup, = (self.root / '.scratch').glob('mcphub-runtime.backup-*')
         self.assertEqual(gateway.runtime_package_versions(backup), {
-            '@modelcontextprotocol/client': ['2.3.0'], 'hono': ['4.13.7'], '@hono/node-server': ['2.1.3'], 'follow-redirects': ['1.16.2']})
-        self.assertEqual(gateway.runtime_package_versions(), {
             '@modelcontextprotocol/client': ['2.3.0'], 'hono': ['4.13.11'], '@hono/node-server': ['2.1.3'], 'follow-redirects': ['1.16.2']})
+        self.assertEqual(gateway.runtime_package_versions(), {
+            '@modelcontextprotocol/client': ['2.3.0'], 'hono': ['4.13.16'], '@hono/node-server': ['2.1.6'], 'follow-redirects': ['1.16.2']})
 
     @patch('gateway.check_node')
     @patch('gateway.prerequisite')
