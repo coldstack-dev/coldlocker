@@ -1,12 +1,27 @@
 # Coldlocker CLI
 
-Run `python3 hub.py` from the repository root. Python 3.11+ and the standard library are enough; verification also uses Git. Every command takes `--help`; `python3 hub.py --version` prints the version. Exit codes: 0 success, 1 rejected input or failed checks, 2 invalid syntax.
+Run `python3 hub.py` from the repository root. Python 3.11+ and the standard library are enough; verification also uses Git. Every command takes `--help`; `python3 hub.py --version` prints the version. Plain commands generally exit 0 on success, 1 on rejected input or failed checks, and 2 on invalid syntax.
 
-Core commands: `scan`, `connect`, `mcp-run`, `connect-composio`, `list`, `remove`, `pack`, `import-skill`, `import-rule`, `import-subagent`, `import-command`, `import-mcp`, `import-routine`, `import-plugin`, `import-connection`, `import-executor`, `link`, `routine`, `publish-remote`, `agents-import`, `agents-export`, `agents-sync`, `serve`, `check`, `doctor`, `update`.
+Core commands: `scan`, `connect`, `disconnect`, `mcp-run`, `connect-composio`, `list`, `remove`, `pack`, `import-skill`, `import-rule`, `import-subagent`, `import-command`, `import-mcp`, `import-routine`, `import-plugin`, `import-connection`, `import-executor`, `link`, `routine`, `publish-remote`, `agents-import`, `agents-export`, `agents-sync`, `serve`, `check`, `doctor`, `update`.
 
 [Policy pack commands](#policy-pack-commands): `sync-lessons`, `deliver-rules`, `model`, `guard-stats`.
 
 On Windows, `python3` may be a Store stub; use `python` or `py -3`. File locks use `msvcrt`. The private store is owner-only on Windows only when Python 3.12.4+ creates it (`mkdir` mode `0o700` sets a protected ACL for SYSTEM, Administrators and the owner); older Pythons leave the parent folder's permissions, so use 3.12.4+. Starting the gateway on Windows is covered in [gateway.md](gateway.md).
+
+## JSON output
+
+`scan`, `list`, `doctor`, `connect`, and `pack install` accept `--json` and write a single object with
+`schema_version: 1` to stdout. Read prompts and diagnostics on stderr.
+
+- Exit 0 reports success.
+- Exit 1 reports findings, attention, or a refusal.
+- Exit 2 reports an incomplete result or an error, including invalid arguments.
+
+`list --json` puts rows in `items`. Scan inventory and safety reports retain
+their `version` field. Scan import reports include items held for review and
+items whose import failed. Inventory limits can produce a partial report, so
+check the exit code even when stdout contains results. Plain and JSON `doctor`
+use the same exit code. An expired OAuth grant causes a nonzero exit.
 
 ## Scan and import
 
@@ -20,7 +35,7 @@ python3 hub.py scan --safety
 python3 hub.py scan --import --approve-risky sc-0123456789ab --yes
 ```
 
-`scan` is a read-only inventory grouped by agent. `--import` confirms and imports all eligible items; non-interactive runs need `--yes`. `--only`, `--yes` and `--update` require `--import`. `--update` re-imports items that changed in the agent they were scanned from; see [scan.md](scan.md#update). `--approve-risky ID...` (requires `--import`) imports flagged items, never one with an embedded secret. `--safety` prints the [safety report](safety.md) and cannot combine with import options. Discovery flags (`--project`, `--projects-root`, `--home`, `--agent`, `--platform`, `--all`) and statuses are in [scan.md](scan.md). Invalid input exits 1.
+`scan` is a read-only inventory grouped by agent. `--import` confirms and imports all eligible items; non-interactive runs need `--yes`. `--only`, `--yes` and `--update` require `--import`. `--update` re-imports items that changed in the agent they were scanned from; see [scan.md](scan.md#update). `--approve-risky ID...` (requires `--import`) imports flagged items, never one with an embedded secret. `--safety` prints the [safety report](safety.md) and cannot combine with import options. Discovery flags (`--project`, `--projects-root`, `--home`, `--agent`, `--platform`, `--all`) and statuses are in [scan.md](scan.md). Plain scan exits 1 on invalid input.
 
 `import-plugin <metadata.json>` and `import-connection <metadata.json>` accept strictly validated metadata-only records with `--owner` and `--origin` (see [formats](formats.md)). They never install code, authenticate or contact endpoints.
 
@@ -89,6 +104,8 @@ python3 hub.py remove skills example --yes
 
 Reimporting a changed source with the same owner and origin updates the item in place (the command `scan` prints for a changed item). Replaced and removed content is kept under `.hub-store/history/<kind>/<name>/<UTC timestamp>/`. A different owner or origin is refused and the message names the values to pass.
 
+Run `python3 hub.py history <kind> <name>` to preview retention for that item. A changed import or removal saves the current version before publishing and keeps the newest existing copy. After publication it prunes older timestamped copies, leaving two at most per item. If the filesystem runs out of space while saving, Coldlocker prunes the older copies shown in the preview and retries once. If the retry fails, the live catalog and its immediately preceding copy stay intact.
+
 ## Skill packs
 
 ```sh
@@ -98,6 +115,21 @@ python3 hub.py pack remove pstack
 ```
 
 Shipped skills other than `hub-discover` come in opt-in packs defined in `packs.json`; today there is one, `pstack`, with the other 57. Without the optional policy pack, `pstack` holds only the 6 that need no pack files; the other 51 come with the pack. A new install lists only `hub-discover` and your imports, through the MCP tools, `list`, `link`, the UI and `publish-remote`. `pack add pstack` lists the rest again. An install that had imports, links or catalog calls before packs existed keeps every pack on. `pack remove` only stops listing: skill files stay in `skills/`, and links made by `hub.py link` are named and left in place. See [formats](formats.md#packsjson).
+
+### Install a pack from GitHub
+
+```sh
+python3 hub.py pack install https://github.com/<owner>/<repo>@<40-character commit> --yes --json
+python3 hub.py pack uninstall <name> --yes
+```
+
+`pack install` asks for confirmation before writing. Outside a terminal it
+requires `--yes`. Both formats exit 1 if any entries are held, even when some
+entries install successfully. JSON includes one row per pack path in
+`entries` with its `kind`, `status` (`installed` or `held`), and either its
+installed name and hash or the reason it was held.
+
+`pack install` fetches the repository at that exact commit and reads `coldlocker-pack.json` at its root (see [formats](formats.md#coldlocker-packjson)). A branch, tag, short SHA or missing ref is refused, so the pack can't change under its pins. An entry path that is absolute, contains `..`, `.` or an empty part, or passes through a symlink refuses the whole pack before anything is imported. Each entry whose sha256 matches its pin goes through the same safety scan and staged import as `import-skill`, `import-rule` or `import-mcp`, with origin `pack-<name>`. Unpinned and mismatched entries, and entries the scan refuses, are held: they are not imported and are listed in the output and in `.hub-store/installed-packs.json`. A name that already exists in the catalog refuses the whole pack, and every entry is screened against the catalog as it was before the install. The pack record is written before the first import and lists each item it creates, with its hash. If any import fails, those items are removed again; if that rollback cannot finish, the record stays so `pack uninstall` can finish it. To import a reviewed flagged entry, uninstall and install again with `--approve-risky <path>`. `pack uninstall` removes only the recorded items whose hash and origin still match, keeping copies under `.hub-store/history/`, and names any it leaves in place.
 
 ## Link skills
 
@@ -123,11 +155,22 @@ python3 hub.py link --home --yes
 python3 hub.py connect
 python3 hub.py connect --agent claude codex
 python3 hub.py connect --write --yes
+python3 hub.py connect --agent claude codex --check-skill <name> --json
 python3 hub.py connect --write --retire-direct
 python3 hub.py connect --remote [--agent grok chatgpt ...] [--url https://catalog.example.org/mcp]
 ```
 
 `connect` prints settings for detected clients and writes nothing. `--write` is the one opt-in exception: after `--yes` or interactive confirmation it backs up and merges the Coldlocker registrations into detected user configs, retaining existing private aliases for permission and approval compatibility. It keeps other settings and rejects symlinked or non-ordinary destinations. `--retire-direct` (with `--write`, running gateway only) also lists and removes user-level direct entries the gateway now serves, in the same backed-up write ([clients.md](clients.md#connect-detected-agents)). While the gateway is stopped, `connect` names imported MCP servers and prints the command that starts it; on Windows, `--write` instead adds each imported stdio server as a `mcp-run <name>` entry, which resolves its `secret://` references at launch ([clients.md](clients.md#imported-mcp-servers)). `--remote` prints OAuth settings for hosted clients independent of local detection, never reads or writes client settings, and refuses `--write`. Supported clients and the hosted-bot status are in [clients.md](clients.md) and [remote.md](remote.md#connect-a-client).
+
+`connect --json` keys results by client in `clients`. Local rows report the
+settings path and outcome, with a backup path and the Undo command for a
+successful write where applicable. Remote rows report setup instructions.
+`--check-skill` uses the selected clients' saved local stdio registrations to
+read the named skill's SKILL.md. It reports each read and transport, and exits 1
+if a selected registration or read fails.
+
+Run the `disconnect` command printed by `connect --write` to preview undo.
+Append `--apply` to confirm. See [Write safety](clients.md#write-safety).
 
 Remote catalog entries use `public_url` in `.hub-store/remote.json` or the
 explicit `--url` override. `routine enable --remote` and `connect-composio
@@ -232,10 +275,11 @@ Add your own names, handles and host labels to the ignored `.hub-store/private-p
 `python3 hub.py update` updates a Git checkout of Coldlocker on `main`. It
 refuses a dirty tree or another branch and changes nothing. Otherwise it prints
 `Rollback SHA: <old>`, runs `git fetch origin main` and
-`git merge --ff-only FETCH_HEAD`, then runs the new `doctor` and a
-[hook self-test](hooks.md#update-self-test). If the merge
-refuses (for example, a diverged branch), HEAD stays put. If `doctor` or the
-self-test fails or raises, it runs `git reset --keep <old>` and exits 1. On
+`git merge --ff-only FETCH_HEAD`, then runs the new checkout's installation checks
+and a [hook self-test](hooks.md#update-self-test). If the merge refuses,
+HEAD stays put. If an installation check or the self-test fails or raises,
+it runs `git reset --keep <old>` and exits 1. Run `doctor` to check gateway and
+OAuth health after an update. On
 success it prints the rollback command.
 
 ## Policy pack commands

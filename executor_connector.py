@@ -1,3 +1,4 @@
+from http.client import HTTPException
 import ipaddress
 import json
 import re
@@ -80,33 +81,36 @@ class Session:
         if self.session:
             headers['Mcp-Session-Id'] = self.session
         request = urllib.request.Request(self.config['url'], json.dumps(message).encode(), headers)
-        with self.opener.open(request, timeout=5) as response:
-            self.session = response.headers.get('Mcp-Session-Id', self.session)
-            content_type = response.headers.get_content_type()
-            if notification:
-                return None
-            if content_type == 'text/event-stream':
-                data = []
-                size = 0
-                for raw in response:
-                    size += len(raw)
-                    if size > LIMIT:
-                        raise ValueError('Executor response too large')
-                    line = raw.decode().rstrip('\r\n')
-                    if line.startswith('data:'):
-                        data.append(line[5:].lstrip())
-                    elif not line and data:
-                        result = json.loads('\n'.join(data))
-                        data = []
-                        if isinstance(result, dict) and result.get('id') == self.serial:
-                            break
+        try:
+            with self.opener.open(request, timeout=5) as response:
+                self.session = response.headers.get('Mcp-Session-Id', self.session)
+                content_type = response.headers.get_content_type()
+                if notification:
+                    return None
+                if content_type == 'text/event-stream':
+                    data = []
+                    size = 0
+                    for raw in response:
+                        size += len(raw)
+                        if size > LIMIT:
+                            raise ValueError('Executor response too large')
+                        line = raw.decode().rstrip('\r\n')
+                        if line.startswith('data:'):
+                            data.append(line[5:].lstrip())
+                        elif not line and data:
+                            result = json.loads('\n'.join(data))
+                            data = []
+                            if isinstance(result, dict) and result.get('id') == self.serial:
+                                break
+                    else:
+                        raise ValueError('missing Executor response')
                 else:
-                    raise ValueError('missing Executor response')
-            else:
-                data = response.read(LIMIT + 1)
-                if len(data) > LIMIT:
-                    raise ValueError('Executor response too large')
-                result = json.loads(data)
+                    data = response.read(LIMIT + 1)
+                    if len(data) > LIMIT:
+                        raise ValueError('Executor response too large')
+                    result = json.loads(data)
+        except HTTPException:
+            raise OSError('Executor response interrupted') from None
         if (not isinstance(result, dict) or result.get('id') != self.serial
                 or 'error' in result or not isinstance(result.get('result'), dict)):
             raise ValueError('Executor request failed')
@@ -131,7 +135,7 @@ class Session:
                 **self.headers, 'Mcp-Session-Id': self.session, 'MCP-Protocol-Version': self.version})
             try:
                 self.opener.open(request, timeout=5).close()
-            except (OSError, ValueError):
+            except (HTTPException, OSError, ValueError):
                 pass
 
     def tools(self):

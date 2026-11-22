@@ -38,7 +38,7 @@ POLICY_FILES = (
     "tests/test_coldfix_lesson_48ef3c4275a9.py", "tests/test_coldfix_lesson_b2e04f1901f2.py",
     "tests/test_coldlocker_hook.py", "tests/test_coldrelease_pass.py", "tests/test_consistency_check.py", "tests/test_context_budget.py",
     "tests/test_decision_replay.py", "tests/test_drift_check.py", "tests/test_guard_replay.py",
-    "tests/test_hook_aliases.py", "tests/test_hooks.py", "tests/test_hub_model.py", "tests/test_live_coldstack.py",
+    "tests/test_hook_aliases.py", "tests/test_hooks.py", "tests/test_hub_model.py", "tests/test_live_coldstack.py", "tests/test_loop_guard.py",
     "tests/test_merge_rule.py", "tests/test_model_policy.py", "tests/test_owner_rules.py",
     "tests/test_route_consumers.py", "tests/test_verify_loop.py",
     "tools/codex_findings.py", "tools/context_budget.py",

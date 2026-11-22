@@ -240,7 +240,7 @@ def check_catalog_scan(root):
     require(not errors, "\n".join(errors))
 
 
-def doctor(root):
+def doctor(root, *, failures=None):
     return report([
         ("instruction consistency", lambda: instruction_consistency(root)),
         ("manifest schema", lambda: shipped(root)),
@@ -249,7 +249,7 @@ def doctor(root):
         ("skill packs", lambda: check_packs(root)),
         ("installation state", lambda: check_installation_state(root)),
         ("catalog secret and private path scan", lambda: check_catalog_scan(root)),
-    ])
+    ], failures=failures)
 
 
 def run(root):
@@ -267,13 +267,15 @@ def run(root):
     return report(checks)
 
 
-def report(checks):
+def report(checks, *, failures=None):
     passed = True
     for title, action in checks:
         try:
             skipped = action()
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
             print(f"FAIL: {title}: {error}")
+            if failures is not None:
+                failures.append(title)
             passed = False
         else:
             print(f"SKIP: {title}: {skipped}" if isinstance(skipped, str) else f"PASS: {title}")

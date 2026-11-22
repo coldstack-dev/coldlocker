@@ -12,7 +12,7 @@ Git. The backup uses macOS and Linux commands; on Windows, use `py -3` for
 Short form for a Git checkout on `main` with an `origin` remote: close agents
 and stop the gateway, then run `python3 hub.py update`. It does steps 1, 4 and
 5 below (without the library backup and diff) and rolls back by itself if
-`doctor` or its hook self-test fails ([details](cli.md#update-the-checkout)).
+an installation check or the hook self-test fails ([details](cli.md#update-the-checkout)).
 Keep the `Rollback SHA` line it prints.
 
 ## What stays and what changes
@@ -169,8 +169,10 @@ Other kinds use their own folder and command, such as `rules` with
 you replaced.
 
 **A client setting is wrong.** An upgrade does not change agent settings. If a
-`connect --write` earlier broke one, it printed an `Undo: cp <backup> <file>`
-line and left a timestamped `.bak` next to the file; run that `cp`.
+`connect --write` earlier broke one, run its printed `disconnect` command to preview undo. Append
+`--apply` to confirm. For older versions that printed a copy command, compare
+the timestamped backup with the current file and preserve later edits when
+removing the registration by hand.
 
 **Your library looks damaged.** Do not copy the whole backup over a live
 `.hub-store/`; that can erase newer secrets, history and routine records. Keep

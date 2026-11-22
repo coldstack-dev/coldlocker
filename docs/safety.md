@@ -8,7 +8,7 @@ python3 hub.py scan --safety --json
 python3 hub.py scan --import --approve-risky sc-0123456789ab --yes
 ```
 
-`--safety` is a read-only report grouped by agent. Each item shows its status, then one line per finding with category, reason and location (`SKILL.md:12`, or `definition` for MCP server definitions). `--json` returns `{version, summary, agents}`; every finding has `category`, `check`, `reason`, `location`, `blocking` and `severity`. It accepts the same discovery options as `scan` (`--home`, `--project`, `--projects-root`, `--agent`, `--platform`) and rejects `--import`, `--only`, `--yes` and `--approve-risky`.
+`--safety` is a read-only report grouped by agent. Each item shows its status, then one line per finding with category, reason and location (`SKILL.md:12`, or `definition` for MCP server definitions). `--json` returns `schema_version`, `version`, `summary`, `agents`, and `incomplete_inventory`. Every finding has `category`, `check`, `reason`, `location`, `blocking` and `severity`. It accepts the same discovery options as `scan` (`--home`, `--project`, `--projects-root`, `--agent`, `--platform`) and rejects `--import`, `--only`, `--yes` and `--approve-risky`.
 
 The scan is local heuristics in `safety.py`. It makes no network calls, runs no imported code and never prints a secret value, only its type and location.
 

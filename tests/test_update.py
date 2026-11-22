@@ -81,6 +81,28 @@ class UpdateTests(HubCase):
         self.assertNotIn("FAIL", output)
         self.assertEqual(self.snapshot(self.base / "home"), self.home_before)
 
+    def test_expired_upstream_does_not_roll_back_a_healthy_update(self):
+        from store import FileStore
+        from ui_auth import Authentication
+
+        files = ('gateway.py', 'gateway_adapter.py', 'executor_connector.py', 'ui_auth.py')
+        for filename in files:
+            shutil.copyfile(REPO / filename, self.upstream / filename)
+        self.run_git(self.upstream, 'add', *files)
+        new = self.push_upstream('notes.txt', 'news\n', 'news')
+        url = 'http://' + '.'.join(('127', '0', '0', '1')) + ':12345/mcp'
+        name = 'expired-fixture'
+        source = self.write('../server.json', {'name': name, 'transport': 'http', 'url': url,
+                                                'description': 'Disposable OAuth fixture'})
+        self.cli('import-mcp', source)
+        Authentication(self.root, FileStore(self.root)).write_metadata(
+            name, {'method': 'oauth', 'resource': url, 'expires_at': 1, 'headers': {}})
+
+        self.assertIn('Roll back with: ', self.cli('update'))
+        self.assertEqual(self.head(self.root), new)
+        self.assertIn(f'OAuth token for {name} expired', self.cli('doctor', code=1))
+        self.assertEqual(self.snapshot(self.base / 'home'), self.home_before)
+
     @needs_pack
     def test_successful_update_warns_about_installed_hook_without_lessons(self):
         from hooks.install import hook_command

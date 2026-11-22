@@ -36,7 +36,7 @@ class XdgIsolationTests(unittest.TestCase):
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.xdg)}), \
                 patch.object(sys.stdin, 'isatty', return_value=False), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(args.action(args), 0)
+            self.assertEqual(args.action(args), 1)
         self.assertTrue(json.loads(stdout.getvalue())['items'])
         self.assertNotIn('xdgleak', stdout.getvalue())
         self.assertEqual(snapshot(self.xdg), self.before)
@@ -50,7 +50,7 @@ class XdgIsolationTests(unittest.TestCase):
                 patch('executor_connector.Session', side_effect=OSError), \
                 patch.object(sys.stdin, 'isatty', return_value=False), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(args.action(args), 0)
+            self.assertEqual(args.action(args), 1)
         self.assertIn('xdgleak', stdout.getvalue())
 
     def test_connect_ignores_xdg_config_home_with_alternate_home(self):

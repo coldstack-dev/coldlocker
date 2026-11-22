@@ -14,6 +14,7 @@ from unittest.mock import patch
 import urllib.error
 import urllib.request
 
+import calllog
 import connect
 import gateway
 import modes
@@ -332,6 +333,35 @@ class LiveGatewayGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
+    def assert_http_catalog_matches_stdio(self, token):
+        from mcp_endpoint import list_resources
+
+        headers = {'Authorization': 'Bearer ' + token}
+        status, initialized, session = post(self.url, INITIALIZE, headers)
+        self.assertEqual(status, 200)
+        headers['Mcp-Session-Id'] = session
+        post(self.url, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, headers)
+        resources = list_resources(self.root)
+        self.assertTrue(resources)
+        requests = [
+            {'jsonrpc': '2.0', 'id': 2, 'method': 'resources/list'},
+            *({'jsonrpc': '2.0', 'id': i, 'method': 'resources/read', 'params': {'uri': resource['uri']}}
+              for i, resource in enumerate(resources, 3)),
+        ]
+        stdio = subprocess.run([sys.executable, '-B', 'mcp_endpoint.py'], cwd=self.root,
+                               input=''.join(json.dumps(message) + '\n' for message in [INITIALIZE, *requests]),
+                               capture_output=True, text=True, check=True, timeout=30)
+        expected = [json.loads(line)['result'] for line in stdio.stdout.splitlines()[1:]]
+        status, listing, _ = post(self.url, requests[0], headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(resource['uri'] for resource in listing['result']['resources']),
+                         sorted(resource['uri'] for resource in expected[0]['resources']))
+        self.assertIn('resources', initialized['result']['capabilities'])
+        for message, result in zip(requests[1:], expected[1:], strict=True):
+            status, response, _ = post(self.url, message, headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(response['result'], result)
+
     def assert_legitimate_client_works(self, headers=None):
         status, response, session = post(self.url, INITIALIZE, headers)
         self.assertEqual(status, 200)
@@ -361,6 +391,7 @@ class LiveGatewayGuardTests(unittest.TestCase):
 
     def test_required_token_gates_mcp_and_the_env_file_token_works(self):
         self.fixture('--require-token')
+        self.assertTrue(calllog.read(self.root)['waiting'])
         self.assertEqual(post(self.url, INITIALIZE)[0], 401)
         self.assertEqual(post(self.url, INITIALIZE, {'Authorization': 'Bearer ' + 'a' * 64})[0], 401)
         self.assertEqual(request(self.port, '/health', host=f'127.0.0.1:{self.port}')[0], 200)
@@ -384,6 +415,7 @@ class LiveGatewayGuardTests(unittest.TestCase):
         self.assertNotIn(token, status.stdout + status.stderr)
         log = (self.root / '.hub-store/gateway/gateway.log').read_text()
         self.assertNotIn(token, log)
+        self.assert_http_catalog_matches_stdio(token)
 
     def test_restart_without_the_flag_removes_the_requirement(self):
         self.fixture('--require-token')

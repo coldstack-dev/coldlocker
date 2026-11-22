@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import hashlib
+import io
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import tempfile
 import tomllib
 from datetime import datetime, timedelta, timezone
 from collections import Counter
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -26,7 +28,7 @@ import packs
 from lifecycle import changed_targets, confirmed, record_links, retained
 from scanner import home_pattern, located, texts
 from store import FileStore, ordinary_path
-from portable import lock
+from portable import lock, print_json
 
 
 ROOT = Path(__file__).resolve().parent
@@ -271,7 +273,12 @@ def stage_path_bindings(root, staged_root, item_name, bindings, indexed, snapsho
     return operations
 
 
-def publish_import(operations, snapshots, finish=None):
+def publish_import(operations, snapshots, finish=None, history=None):
+    with (history if history is not None else nullcontext()) as commit_history:
+        _publish_import(operations, snapshots, finish, commit_history)
+
+
+def _publish_import(operations, snapshots, finish, commit_history):
     prepared = []
     changed = []
     created = []
@@ -303,6 +310,8 @@ def publish_import(operations, snapshots, finish=None):
                 target.replace(previous)
             if pending:
                 pending.replace(target)
+        if commit_history:
+            commit_history()
         if finish:
             finish()
     except BaseException:
@@ -478,6 +487,8 @@ def import_item(args, root=ROOT):
     entry = import_preflight(value, collection, item_name, destination, relative, owner, origin, kind)
     validators.require(entry is not None or not getattr(args, "require_existing", False),
                        "scan update requires an existing catalog entry")
+    validators.require(entry is None or not getattr(args, "create_only", False),
+                       f"{collection} {item_name} already exists in the catalog")
     if prompt:
         target = destination.parent / prompt.name
         ordinary_file(target)
@@ -488,6 +499,7 @@ def import_item(args, root=ROOT):
         if entry is not None:
             current = destination.parent / read_json(destination)["prompt"]
             ordinary_file(current)
+            snapshots.setdefault(current, import_snapshot(current))
             known = {entry.get("prompt_sha256"), hashlib.sha256(stored.encode("utf-8")).hexdigest()}
             validators.require(not current.exists() or validators.digest(current) in known,
                                f"routine prompt differs from its recorded hash; copy {current.name} out of the "
@@ -509,6 +521,8 @@ def import_item(args, root=ROOT):
             staged_prompt.write_bytes(stored.encode("utf-8"))
             operations.append((destination.parent / prompt.name, staged_prompt))
         previous = changed_targets(operations)
+        if prompt and entry is not None and (previous or snapshots[current] is None):
+            previous = [destination] if snapshots[current] is None else [destination, current]
         updated = import_manifest(value, collection, item_name, relative, owner, origin, validators.digest(staged),
                                   validators.digest(staged_prompt) if prompt else None)
         staged_manifest = staged_root / "catalog" / "manifest.json"
@@ -521,8 +535,8 @@ def import_item(args, root=ROOT):
         unchanged = all(target.exists() == (staged is not None) and
                         (staged is None or validators.digest(target) == validators.digest(staged))
                         for target, staged in operations)
-        with retained(root, collection, item_name, previous):
-            publish_import(operations, snapshots, None if unchanged else record_receipt)
+        history = retained(root, collection, item_name, previous)
+        publish_import(operations, snapshots, None if unchanged else record_receipt, history)
     print(f"Recorded {collection}: {item_name}")
     return 0
 
@@ -1178,8 +1192,8 @@ def hook_in_force(root, client, config):
                                "harmless deny probe did not return the expected denial")
 
 
-def doctor(args):
-    result = checker.doctor(ROOT)
+def doctor_checks(failures):
+    result = checker.doctor(ROOT, failures=failures)
     for client, directory in installed_hook_lessons():
         if directory:
             print(f"PASS: {client} hook injects lessons from {directory}")
@@ -1191,33 +1205,66 @@ def doctor(args):
     hooks = checker.report([
         ("codex hook in force", lambda: hook_in_force(ROOT, "codex", codex)),
         ("claude hook in force", lambda: hook_in_force(ROOT, "claude", claude)),
-    ])
+    ], failures=failures)
+    return result or hooks
+
+
+def doctor(args):
+    as_json = getattr(args, "json", False)
+    failures = [] if as_json else None
+    with redirect_stdout(io.StringIO()) if as_json else nullcontext():
+        result = doctor_checks(failures)
     runtime = ROOT / ".hub-store/gateway"
-    if (runtime / "pid.json").exists():
+    has_gateway_pid = (runtime / "pid.json").exists()
+    health = None
+    expired, unavailable, health_unavailable = [], False, False
+    if has_gateway_pid or (ROOT / "gateway.py").is_file():
         import gateway
 
+        try:
+            expired, unavailable = gateway.expired_oauth(ROOT, runtime)
+        except gateway.HEALTH_ERRORS:
+            unavailable = True
+    if has_gateway_pid:
         try:
             current = gateway.state(runtime, checkout=ROOT)
             if not current:
                 raise ValueError("gateway supervisor unavailable")
             summary, healthy, warnings = gateway.health_report(ROOT, current["port"], current)
         except gateway.HEALTH_ERRORS:
-            print("WARN: gateway health and connection totals unavailable")
-        else:
-            print(f"{'PASS' if healthy else 'WARN'}: {summary}")
-            for warning in warnings:
-                print(f"WARN: {warning}")
-    return result or hooks
+            health_unavailable = True
+            summary, healthy, warnings = "gateway health and connection totals unavailable", False, []
+        health = {"summary": summary, "healthy": healthy, "warnings": warnings}
+    if result == 0:
+        if unavailable or health_unavailable:
+            result = 2
+        elif expired or (health and (not health["healthy"] or health["warnings"])):
+            result = 1
+    if as_json:
+        print_json({"exit_code": result, "failed_checks": failures, "gateway": health, "expired_oauth": expired,
+                    "oauth_expiry_details_available": not unavailable})
+        return result
+    if health is not None:
+        print(f"{'PASS' if health['healthy'] else 'WARN'}: {health['summary']}")
+        for warning in health["warnings"]:
+            print(f"WARN: {warning}")
+    for item in expired:
+        print(f"WARN: OAuth token for {item['name']} expired. {item['remediation']}")
+    if unavailable:
+        print("WARN: OAuth expiry details unavailable for one or more upstreams")
+    return result
 
 
 def post_update_checks(had_pack):
-    doctor = subprocess.run([sys.executable, str(ROOT / "hub.py"), "doctor"], cwd=ROOT,
-                            capture_output=True, text=True, encoding="utf-8")
-    print(doctor.stdout + doctor.stderr, end="")
+    installation = subprocess.run(
+        [sys.executable, "-B", "-c", "from hub import doctor_checks\nraise SystemExit(doctor_checks(None))"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+    )
+    print(installation.stdout + installation.stderr, end="")
     if not had_pack and not (ROOT / validators.POLICY_PACK).is_file():
         print("SKIP: hook self-test: policy pack not installed")
-        return doctor.returncode == 0
-    return hook_self_test(ROOT) and doctor.returncode == 0
+        return installation.returncode == 0
+    return hook_self_test(ROOT) and installation.returncode == 0
 
 
 def guard_stats(args):
@@ -1454,8 +1501,9 @@ def parser():
     command.set_defaults(action=deliver_rules)
     commands.add_parser("check", help="Verify schema, license, hashes, ignores and tracked content.").set_defaults(
         action=lambda args: checker.run(ROOT))
-    commands.add_parser("doctor", help="Check an installed catalog without enforcing maintainer commit identities.").set_defaults(
-        action=doctor)
+    command = commands.add_parser("doctor", help="Check an installed catalog without enforcing maintainer commit identities.")
+    command.add_argument("--json", action="store_true", help="Report failed check names and gateway and OAuth diagnostics as JSON.")
+    command.set_defaults(action=doctor)
     model = commands.add_parser("model", help="Print a role's configured route from models.yaml, without cold.")
     model_actions = model.add_subparsers(dest="model_action", required=True)
     for action, help_text in (("get", "Print the role's provider, model and effort."),
@@ -1470,7 +1518,7 @@ def parser():
     stats = commands.add_parser("guard-stats", help="Summarize local hook decisions by day and guard.")
     stats.add_argument("--days", type=int, default=7)
     stats.set_defaults(action=guard_stats)
-    commands.add_parser("update", help="Fast-forward main from origin, then run doctor and a hook self-test; roll back if either fails.").set_defaults(
+    commands.add_parser("update", help="Fast-forward main from origin, then run installation checks and a hook self-test. Roll back if either fails.").set_defaults(
         action=update)
     for title, in_pack in (("core commands", False),
                            ("policy pack commands (optional; see docs/core-vs-policy.md)", True)):
@@ -1481,18 +1529,38 @@ def parser():
 
 
 def main():
-    args = parser().parse_args()
+    argv = sys.argv[1:]
+    option_args = argv[:argv.index("--")] if "--" in argv else argv
+    supports_json = argv and (argv[0] in ("doctor", "list", "scan", "connect") or argv[:2] == ["pack", "install"])
+    as_json = supports_json and any(
+        "--json".startswith(option.partition("=")[0]) for option in option_args[1:] if option.startswith("--")
+    )
+    help_output = io.StringIO()
+    try:
+        with redirect_stdout(help_output) if as_json else nullcontext():
+            args = parser().parse_args(argv)
+    except SystemExit as error:
+        if as_json:
+            if error.code == 0:
+                print_json({"exit_code": 0, "help": help_output.getvalue()})
+            else:
+                print_json({"exit_code": 2, "error": "invalid arguments; see stderr"})
+            return error.code
+        raise
     try:
         return args.action(args)
     except Refused as refusal:
         print(refusal, file=sys.stderr)
+        if getattr(args, "json", False):
+            print_json({"exit_code": 1, "error": "refused; see stderr"})
         return 1
     except ValueError as error:
         print("FAIL: " + str(error), file=sys.stderr)
-        return 1
     except (OSError, TypeError, KeyError, RecursionError):
         print("FAIL: invalid input, unsafe destination, or filesystem operation failed", file=sys.stderr)
-        return 1
+    if getattr(args, "json", False):
+        print_json({"exit_code": 2, "error": "command failed; see stderr"})
+    return 2 if args.action is doctor or getattr(args, "json", False) else 1
 
 
 if __name__ == "__main__":

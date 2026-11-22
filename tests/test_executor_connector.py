@@ -1,10 +1,13 @@
 import contextlib
 import io
 import json
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import sys
 import tempfile
 import threading
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -52,6 +55,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         method = request['method']
         params = request.get('params', {})
+        if method == 'initialize' and self.server.interrupt_response:
+            self.send_response(200)
+            self.send_header('Transfer-Encoding', 'chunked')
+            self.send_header('Mcp-Session-Id', 'fixture-session')
+            self.end_headers()
+            self.wfile.write(b'7\r\n{}')
+            return
         if method == 'initialize':
             result = {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}}}
         elif method == 'notifications/initialized':
@@ -85,6 +95,7 @@ class ExecutorTests(unittest.TestCase):
         self.server.paginate = False
         self.server.repeat = False
         self.server.redirect = None
+        self.server.interrupt_response = False
         self.server.authorization = 'synthetic-endpoint-value'
         self.server.call = lambda params: {'content': [{'type': 'text', 'text': '5'}]}
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -152,6 +163,22 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual([r['method'] for r, h in self.server.requests], ['initialize', 'notifications/initialized', 'tools/list'])
         self.assertEqual(self.server.requests[-1][1]['Mcp-Session-Id'], 'fixture-session')
         self.assertNotIn(self.server.authorization, json.dumps(result))
+
+    def test_connect_falls_back_when_executor_response_is_interrupted(self):
+        self.server.interrupt_response = True
+        settings = self.root / '.codex/config.toml'
+        settings.parent.mkdir()
+        settings.write_text('model = "fixture-model"\n', encoding='utf-8')
+        argv = ['hub.py', 'connect', '--home', str(self.root), '--agent', 'codex', '--write', '--yes']
+        with patch.object(hub, 'ROOT', self.root), patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                self.assertEqual(hub.main(), 0)
+            except HTTPException as error:
+                self.fail(f'Connect did not fall back: {type(error).__name__}')
+        configured = tomllib.loads(settings.read_text(encoding='utf-8'))
+        self.assertEqual(set(configured['mcp_servers']), {'coldlocker'})
+        self.assertEqual(configured['model'], 'fixture-model')
+        self.assertEqual(self.server.deleted, 1)
 
     def test_sse_pagination_and_call(self):
         self.server.sse = True

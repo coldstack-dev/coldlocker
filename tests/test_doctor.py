@@ -235,6 +235,15 @@ print(json.dumps({"id": request["id"], "result": {"data": [{"hooks": [hook], "er
         (self.local / "skills/sample/nested/data.txt").write_text("changed\n")
         self.assertIn("FAIL: manifest content hashes", self.cli("doctor", code=1))
 
+    def test_json_names_failed_check_without_raw_error(self):
+        (self.local / "skills/sample/nested/data.txt").write_text("changed\n")
+        output = self.cli("doctor", "--json", code=1)
+        report = json.loads(output)
+        self.assertEqual(report.get("schema_version"), 1)
+        self.assertEqual(report["exit_code"], 1)
+        self.assertEqual(report["failed_checks"], ["manifest content hashes"])
+        self.assertNotIn("content hash mismatch", output)
+
     def test_python_bytecode_cache_does_not_change_skill_digest(self):
         skill = self.local / "skills/sample"
         before = digest(skill)

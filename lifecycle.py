@@ -1,17 +1,21 @@
 import contextlib
+import errno
 import json
+import re
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import packs
+from portable import lock, print_json
 from checks import validators
 from store import ordinary_path
 
 
 HISTORY = ".hub-store/history"
+STAMP_FORMAT = "%Y%m%dT%H%M%S%fZ"
 LINKS = ".hub-store/links.json"
 KIND_NAMES = {"skill": "skills", "rule": "rules", "mcp": "mcp_servers", "mcp_server": "mcp_servers",
               "routine": "routines", "plugin": "plugins", "connection": "connections",
@@ -43,7 +47,7 @@ def rows(hub, root):
 def list_items(args, hub):
     found = [row for row in rows(hub, hub.ROOT) if args.kind in (None, row["kind"])]
     if args.json:
-        print(json.dumps(found, indent=2))
+        print_json({"items": found})
         return 0
     if not found:
         print("No items")
@@ -79,8 +83,55 @@ def history_base(root, collection, item_name):
     return base
 
 
-def keep(root, collection, item_name, held, rollback):
-    base = history_base(root, collection, item_name)
+def archives(base):
+    if not base.exists():
+        return []
+    return sorted(path for path in base.iterdir()
+                  if re.fullmatch(r"[0-9]{8}T[0-9]{12}Z", path.name)
+                  and not path.is_symlink() and path.is_dir())
+
+
+def preview_history(args, hub):
+    base = history_base(hub.ROOT, args.kind, validators.name(args.name))
+    history = archives(base)
+    if not history:
+        print("No saved copies")
+    for path in history[:-1]:
+        print(f"Would prune {path.name}")
+    if history:
+        print(f"Keep {history[-1].name}")
+    return 0
+
+
+def copy_history(catalog, paths, destination):
+    relative = {path.relative_to(catalog) for path in paths}
+
+    def excluded(directory, names):
+        parent = Path(directory).relative_to(catalog)
+        return [name for name in names if not any(
+            (parent / name).is_relative_to(path) or path.is_relative_to(parent / name)
+            for path in relative)]
+
+    shutil.copytree(catalog, destination, ignore=excluded)
+    validators.require(all((destination / path).exists() for path in relative),
+                       "could not save complete history: catalog content is missing")
+
+
+def out_of_space(error):
+    if isinstance(error, shutil.Error):
+        # copytree reports nested errors as (source, destination, str(OSError)) triples.
+        return any(reason.startswith((f"[Errno {errno.ENOSPC}]", "[WinError 112]", "[WinError 39]"))
+                   for _, _, reason in error.args[0])
+    return error.errno == errno.ENOSPC
+
+
+def keep(root, base, paths, cleanup, rollback):
+    history = archives(base)
+    expired = history[:-1]
+    stamp = datetime.now(timezone.utc)
+    if history and stamp.strftime(STAMP_FORMAT) <= history[-1].name:
+        stamp = datetime.strptime(history[-1].name, STAMP_FORMAT) + timedelta(microseconds=1)
+    archive = base / stamp.strftime(STAMP_FORMAT)
     created = []
 
     def remove_empty_directories():
@@ -99,45 +150,53 @@ def keep(root, collection, item_name, held, rollback):
                 raise
         else:
             created.append(directory)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    archive = base / stamp
-    with tempfile.TemporaryDirectory(prefix=".pending-", dir=base) as pending:
+
+    def stage():
+        pending = cleanup.enter_context(tempfile.TemporaryDirectory(prefix=".pending-", dir=base))
         copy = Path(pending) / "copy"
-        shutil.copytree(held, copy)
+        copy_history(root / validators.LOCAL, paths, copy)
+        return copy
+
+    try:
+        copy = stage()
+    except OSError as error:
+        if not expired or not out_of_space(error):
+            raise
+        cleanup.close()
+        for path in expired:
+            shutil.rmtree(path)
+        expired.clear()
+        copy = stage()
+
+    def commit():
         copy.rename(archive)
         rollback.callback(shutil.rmtree, archive, ignore_errors=True)
 
+    return commit, expired
+
 
 @contextlib.contextmanager
-def retained(root, collection, item_name, paths, *, required=False):
+def retained(root, collection, item_name, paths, *, operation="update"):
     paths = list(paths)
-    if not paths:
-        yield
-        return
-    history_base(root, collection, item_name)
-    catalog = root / validators.LOCAL
-    with tempfile.TemporaryDirectory() as temporary:
-        held = Path(temporary)
-        for path in paths:
-            copy = held / path.relative_to(catalog)
-            copy.parent.mkdir(parents=True, exist_ok=True)
-            if path.is_dir():
-                shutil.copytree(path, copy)
-            else:
-                shutil.copyfile(path, copy)
-        with contextlib.ExitStack() as rollback:
-            if not required:
-                yield
-            try:
-                keep(root, collection, item_name, held, rollback)
-            except OSError as error:
-                if required:
-                    raise ValueError(f"could not save removal history under {HISTORY}/: {error}") from error
-                print(f"Warning: published, but could not keep the previous copy under {HISTORY}/: {error}", file=sys.stderr)
-                return
-            if required:
-                yield
+    expired = []
+    with ordinary_path(root / "manifest.json").open("rb") as stream, contextlib.ExitStack() as rollback:
+        # Windows byte-range locks must leave the shipped manifest readable during publication.
+        lock(stream, offset=1 << 40)
+        with contextlib.ExitStack() as cleanup:
+            commit = None
+            if paths:
+                base = history_base(root, collection, item_name)
+                try:
+                    commit, expired = keep(root, base, paths, cleanup, rollback)
+                except OSError as error:
+                    raise ValueError(f"could not save {operation} history under {HISTORY}/: {error}") from error
+            yield commit
             rollback.pop_all()
+        for path in expired:
+            try:
+                shutil.rmtree(path)
+            except OSError as error:
+                print(f"Warning: could not prune {path}: {error}", file=sys.stderr)
 
 
 def read_links(root):
@@ -168,7 +227,7 @@ def dangling_links(root, skill_path):
             if item["skill"] == str(skill_path) and Path(item["link"]).is_symlink()]
 
 
-def remove(args, hub, root=None):
+def remove(args, hub, root=None, expected=None):
     root = hub.ROOT if root is None else root
     collection = collection_name(args.kind)
     name = validators.name(args.name)
@@ -179,14 +238,18 @@ def remove(args, hub, root=None):
                        f"{name} is a shipped {singular}; shipped items cannot be removed")
     hub.ordinary_file(root / "manifest.json")
     hub.ordinary_file(root / validators.LOCAL / "manifest.json")
+    catalog = root / validators.LOCAL
+    snapshots = {path: hub.import_snapshot(path) for path in (root / "manifest.json", catalog / "manifest.json")}
     value = validators.read_local(root, hub.read_json)
     entry = next((item for item in value.get(collection, []) if item[key] == name), None)
     validators.require(entry is not None, f"no imported {singular} named {name}; run hub.py list")
+    validators.require(expected is None or (entry["provenance"]["origin"], entry["sha256"]) == expected,
+                       f"{singular} {name} changed after its pack installed it; left in place")
     owner = validators.label(args.owner or "coldlocker")
     validators.require(validators.same_owner(entry["owner"], owner),
                        f"{name} is owned by {entry['owner']}; only that owner may remove it (--owner {entry['owner']})")
-    catalog = root / validators.LOCAL
     destination = catalog / entry["path"]
+    snapshots[destination] = hub.import_snapshot(destination)
     hub.import_preflight(value, collection, name, destination, entry["path"], owner,
                          entry["provenance"]["origin"], singular if singular in ("skill", "routine") else "file")
     targets = [destination]
@@ -205,7 +268,7 @@ def remove(args, hub, root=None):
     if not confirmed(args, "Remove it?"):
         print("Cancelled; nothing changed")
         return 1
-    snapshots = {path: hub.import_snapshot(path) for path in (root / "manifest.json", catalog / "manifest.json", *targets)}
+    snapshots.update({path: hub.import_snapshot(path) for path in targets if path not in snapshots})
     with tempfile.TemporaryDirectory() as temporary:
         staged_root = Path(temporary)
         remaining = [item for item in value[collection] if item[key] != name]
@@ -219,8 +282,8 @@ def remove(args, hub, root=None):
                 operations.extend(hub.stage_path_bindings(root, staged_root, name, {}, True, snapshots,
                                                           hub.read_json(destination)))
         operations.append((catalog / "manifest.json", staged_manifest))
-        with retained(root, collection, name, (path for path in targets if path.exists()), required=True):
-            hub.publish_import(operations, snapshots)
+        history = retained(root, collection, name, (path for path in targets if path.exists()), operation="removal")
+        hub.publish_import(operations, snapshots, history=history)
     print(f"Removed {collection}: {name}")
     if singular == "routine":
         left = sorted(item.name for item in destination.parent.iterdir())
@@ -239,6 +302,10 @@ def register(commands, hub):
                          help="Only this kind: " + ", ".join(validators.COLLECTIONS) + ".")
     command.add_argument("--json", action="store_true", help="Print the rows as JSON.")
     command.set_defaults(action=lambda args: list_items(args, hub))
+    command = commands.add_parser("history", help="Preview which saved copies the next changed import or removal would prune.")
+    command.add_argument("kind", type=collection_name, metavar="KIND")
+    command.add_argument("name")
+    command.set_defaults(action=lambda args: preview_history(args, hub))
     command = commands.add_parser(
         "remove", help="Remove an imported item and its catalog entry; shipped items are refused.",
         description="Remove an imported item. Deletes its files and local manifest entry with the same staged, "

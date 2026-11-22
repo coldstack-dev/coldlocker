@@ -476,6 +476,22 @@ def start(runtime, port, auto_refresh=False, dashboard=False, require_token=Fals
         return start_runtime(runtime, port, auto_refresh, dashboard, require_token)
 
 
+def catalog_source(path):
+    return Path(json.loads(path.read_text(encoding='utf-8'))['path'])
+
+
+def add_catalog(runtime_settings, source):
+    catalog = {'type': 'stdio', 'command': sys.executable,
+               'args': ['-B', str(ROOT / 'mcp_endpoint.py'), '--root', str(source), '--no-call-log']}
+    servers = runtime_settings['mcpServers']
+    name = 'coldlocker-catalog'
+    suffix = 1
+    while name in servers and servers[name].get('args') != catalog['args']:
+        suffix += 1
+        name = f'coldlocker-catalog-copy{suffix}'
+    servers.setdefault(name, {}).update(catalog)
+
+
 def start_runtime(runtime, port, auto_refresh=False, dashboard=False, require_token=False):
     if state(runtime):
         raise ValueError('already running')
@@ -485,12 +501,13 @@ def start_runtime(runtime, port, auto_refresh=False, dashboard=False, require_to
     prerequisite('ss' if sys.platform == 'linux' else 'lsof')
     check_runtime()
     require_free(port)
-    source = ordinary_path(runtime / 'source.json')
-    if source.exists():
+    source_path = ordinary_path(runtime / 'source.json')
+    if source_path.exists():
+        source = catalog_source(source_path)
         store = FileStore(ROOT)
-        source_root = Path(json.loads(source.read_text(encoding='utf-8'))['path'])
-        updated = drop_unset(ui_bindings(settings(runtime), source_root, store), store)
-        updated = launch_settings(updated, source_root)
+        updated = drop_unset(ui_bindings(settings(runtime), source, store), store)
+        updated = launch_settings(updated, source)
+        add_catalog(updated, source)
         save(runtime / 'mcp_settings.json', updated)
     arguments = [sys.executable, str(ROOT / 'gateway.py'), '_run', '--port', str(port)]
     if auto_refresh:
@@ -561,6 +578,39 @@ def upstream_reason(server):
     if re.search(r'\b(?:ETIMEDOUT|timed out)\b', error, re.I):
         return 'connection timed out'
     return 'upstream connection failed'
+
+
+def expired_oauth(root, runtime):
+    from mcp_endpoint import entries, read_server
+    from ui_auth import Authentication, entry_prefix
+
+    source_path = ordinary_path(runtime / 'source.json')
+    source = catalog_source(source_path) if source_path.exists() else root
+    store = FileStore(root)
+    authentication = Authentication(source, store)
+    now = time.time()
+    expired = []
+    unavailable = False
+    for entry in entries(source, 'mcp_servers'):
+        name = entry['name']
+        try:
+            binding = authentication.metadata(name)
+            if binding.get('method') != 'oauth' or 'expires_at' not in binding:
+                continue
+            expiry = binding['expires_at']
+            if type(expiry) not in (int, float) or not 0 < expiry < float('inf'):
+                raise ValueError('invalid OAuth expiry')
+            server = read_server(source, entry)
+            if server['transport'] == 'http' and binding['resource'] == server['url'] and expiry <= now:
+                remediation = 'Reconnect this upstream on the Sign in screen.'
+                if store.has(entry_prefix(name) + '-refresh'):
+                    remediation = 'Run python3 gateway.py refresh, or reconnect on the Sign in screen if refresh fails.'
+                expired.append({'name': name if store.redact(name) == name else '[redacted]',
+                                'status': 'expired',
+                                'remediation': remediation})
+        except HEALTH_ERRORS:
+            unavailable = True
+    return sorted(expired, key=lambda item: item['name']), unavailable
 
 
 def disconnected_upstreams(root, port, child, total, disconnected):
@@ -700,7 +750,8 @@ def enabled(source):
 
 
 def main():
-    parser = QuietParser(description='Select a local gateway; Executor lifecycle stays user-managed')
+    parser = QuietParser(description='Select a local gateway; Executor lifecycle stays user-managed',
+                         epilog='Local clients can read the catalog. Use --require-token on shared machines.')
     parser.add_argument('command', choices=('install', 'prepare', 'start', 'stop', 'status', 'sync', 'refresh', 'url', 'register-executor', 'token', '_run'))
     parser.add_argument('--server')
     parser.add_argument('--apply', action='store_true')

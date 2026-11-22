@@ -57,6 +57,11 @@ class LocalCatalogProofTests(unittest.TestCase):
             'backend': 'executor', 'status': 'unreachable', 'url': url, 'tools': [],
         })
 
+        fixture.env['PATH'] = fixture.env['TMPDIR']
+        rows = json.loads(fixture.cli('list', '--kind', 'skills', '--json').stdout)
+        self.assertIsInstance(rows, dict)
+        self.assertEqual(rows.get('schema_version'), 1)
+        self.assertIn('catalog-sample', [row['name'] for row in rows['items']])
         fixture.cli('connect', '--agent', 'codex')
         fixture.cli('connect', '--agent', 'codex', '--write', '--yes')
         servers = proof.tomllib.loads(fixture.codex.read_text(encoding='utf-8'))['mcp_servers']

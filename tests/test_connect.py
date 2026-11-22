@@ -28,6 +28,17 @@ def escaped(path):
     return json.dumps(str(path))[1:-1]
 
 
+def printed_undos(output):
+    return [line.removeprefix('Undo: ') for line in output.getvalue().splitlines() if line.startswith('Undo: ')]
+
+
+def run_undo(command, *, apply=False, check=True):
+    if apply:
+        command += ' --apply'
+    return subprocess.run(command if sys.platform == 'win32' else shlex.split(command),
+                          capture_output=True, text=True, check=check)
+
+
 class CheckoutFilesystem(SimpleNamespace):
     def __truediv__(self, name):
         return self.path / name
@@ -434,6 +445,43 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(before, (self.home / '.codex/config.toml').read_bytes())
         self.assertEqual(list(self.home.rglob('*.bak')), [])
 
+    def test_connect_cli_json_reports_each_client_and_preserves_undo(self):
+        command = [sys.executable, 'hub.py', 'connect', '--home', str(self.home), '--platform', 'linux',
+                   '--agent', 'claude', 'codex', '--json']
+        paths = [self.home / '.claude.json', self.home / '.codex/config.toml']
+        before = [path.read_bytes() for path in paths]
+        for flags, expected, status in (([], 0, 'preview'), (['--write'], 1, 'refused'),
+                                        (['--write', '--yes'], 0, 'connected')):
+            result = subprocess.run([*command, *flags], cwd=ROOT, env=UTF8, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(result.returncode, expected, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual((report['schema_version'], report['exit_code']), (1, expected))
+            self.assertEqual({client: item['status'] for client, item in report['clients'].items()},
+                             {'claude': status, 'codex': status})
+            if status == 'connected':
+                for item in report['clients'].values():
+                    run_undo(item['undo'], apply=True)
+            self.assertEqual([path.read_bytes() for path in paths], before)
+            print(f'connect: claude={status}, codex={status}, exit {expected}')
+
+    def test_setup_json_usage_errors_and_help_remain_single_objects(self):
+        home = str(self.home)
+        commands = [
+            ('connect', '--home', home, '--invalid', 2),
+            ('pack', 'install', '--invalid', 2),
+            ('connect', '--help', 0),
+            ('pack', 'install', '--help', 0),
+        ]
+        for *args, expected in commands:
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, 'hub.py', *args, '--json'], cwd=ROOT, env=UTF8,
+                                        capture_output=True, text=True, encoding='utf-8')
+                self.assertEqual(result.returncode, expected, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual((report['schema_version'], report['exit_code']), (1, expected))
+                self.assertIn('error' if expected else 'help', report)
+
     def test_interactive_confirmation(self):
         class Input(io.StringIO):
             def isatty(self):
@@ -533,6 +581,19 @@ class ConnectTests(unittest.TestCase):
                 connect.save(change)
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(list(path.parent.glob(path.name + '.*.bak')), [])
+
+    def test_failed_connect_write_cleans_only_its_own_files(self):
+        path = self.home / '.claude.json'
+        original = path.read_bytes()
+        prior = path.with_name(path.name + '.older.bak')
+        prior.write_bytes(b'previous backup')
+        before = set(path.parent.iterdir())
+        for _ in range(2):
+            with patch('connect.os.replace', side_effect=PermissionError('fixture write refused')):
+                self.assertEqual(self.run_connect(agent=['claude'], write=True, yes=True), 1)
+            self.assertEqual(set(path.parent.iterdir()), before)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(prior.read_bytes(), b'previous backup')
 
     def test_agent_filter_and_cli(self):
         self.assertEqual(self.run_connect(agent=['cursor']), 0)
@@ -688,26 +749,114 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(self.run_connect(write=True, yes=True, agent=['claude']), 0)
         backups = list(self.home.glob('.claude.json.*.bak'))
         self.assertEqual(len(backups), 1)
-        lines = [line for line in self.output.getvalue().splitlines() if line.startswith('Undo: ')]
-        self.assertEqual(len(lines), 1)
+        undo, = printed_undos(self.output)
         self.assertIn('Backup: ' + str(backups[0]), self.output.getvalue())
-        if sys.platform.startswith('win'):
-            expected = 'Undo: cmd /c copy /Y "' + str(backups[0]) + '" "' + str(path) + '"'
-        else:
-            expected = 'Undo: cp ' + shlex.quote(str(backups[0])) + ' ' + shlex.quote(str(path))
-        self.assertEqual(lines[0], expected)
+        written = path.read_bytes()
+        self.assertIn('Preview:', run_undo(undo).stdout)
+        self.assertEqual(path.read_bytes(), written)
         path.write_bytes(b'changed after connect\n')
-        undo = lines[0][len('Undo: '):]
-        subprocess.run(undo if sys.platform.startswith('win') else shlex.split(undo), check=True)
+        self.assertNotEqual(run_undo(undo, apply=True, check=False).returncode, 0)
+        self.assertEqual(path.read_bytes(), b'changed after connect\n')
+        path.write_bytes(written)
+        run_undo(undo, apply=True)
         self.assertEqual(path.read_bytes(), original)
 
+    def test_undo_refuses_after_replacing_an_existing_registration_and_a_later_edit(self):
+        path = self.home / '.claude.json'
+        path.write_bytes(b'{"mcpServers":{"coldlocker":{"command":"original"}}}')
+        self.assertEqual(self.run_connect(write=True, yes=True, agent=['claude']), 0)
+        later = path.read_bytes().replace(b'"mcpServers":{', b'"mcpServers":{"later":{"command":"keep"},')
+        path.write_bytes(later)
+        undo, = printed_undos(self.output)
+        refusal = run_undo(undo, apply=True, check=False)
+        self.assertNotEqual(refusal.returncode, 0)
+        self.assertIn('replaced', refusal.stderr)
+        self.assertEqual(path.read_bytes(), later)
+
+    def test_undo_refuses_a_changed_connect_time_backup(self):
+        path = self.home / '.claude.json'
+        self.assertEqual(self.run_connect(write=True, yes=True, agent=['claude']), 0)
+        written = path.read_bytes()
+        backup, = self.home.glob('.claude.json.*.bak')
+        backup.write_bytes(b'{}')
+        undo, = printed_undos(self.output)
+        refusal = run_undo(undo, apply=True, check=False)
+        self.assertNotEqual(refusal.returncode, 0)
+        self.assertIn('backup changed', refusal.stderr)
+        self.assertEqual(path.read_bytes(), written)
+
     def test_write_prints_cmd_compatible_undo_on_windows(self):
+        self.home = self.home.rename(self.home.with_name('home with spaces'))
         path = self.home / '.claude.json'
         with patch('connect.sys.platform', 'win32'):
             self.assertEqual(self.run_connect(write=True, yes=True, agent=['claude']), 0)
-        backup = next(self.home.glob('.claude.json.*.bak'))
-        lines = [line for line in self.output.getvalue().splitlines() if line.startswith('Undo: ')]
-        self.assertEqual(lines, ['Undo: cmd /c copy /Y "' + str(backup) + '" "' + str(path) + '"'])
+        backup, = self.home.glob('.claude.json.*.bak')
+        undo, = printed_undos(self.output)
+        self.assertTrue(undo.startswith(f'"{sys.executable}" "{ROOT / "hub.py"}" "disconnect" "claude" "{path}" '))
+        self.assertIn(f' "--backup" "{backup}" ', undo)
+
+    def test_later_server_survives_undo_in_new_and_existing_configs(self):
+        for agent, relative in [('claude', '.claude.json'), ('codex', '.codex/config.toml')]:
+            path = self.home / relative
+            for existing in (False, True):
+                with self.subTest(agent=agent, existing=existing):
+                    path.unlink(missing_ok=True)
+                    (self.home / '.claude').mkdir(exist_ok=True)
+                    if existing:
+                        path.write_bytes(b'model = "base"\r\n' if agent == 'codex' else b'{"pref" : 42}\r\n')
+                    self.output = io.StringIO()
+                    self.assertEqual(self.run_connect(write=True, yes=True, agent=[agent]), 0)
+                    commands = printed_undos(self.output)
+                    self.assertEqual(len(commands), 1, 'every changed config needs a previewable undo')
+                    undo = commands[0]
+                    written = path.read_bytes()
+                    if agent == 'codex':
+                        later = written + b'\n# Keep this comment\n[mcp_servers.later]\ncommand  =  "keep"\n'
+                        expected = later[:later.index(b'[mcp_servers.coldlocker]')] + later[len(written):]
+                        modified = later.replace(b'command = ', b'command  = ', 1)
+                    else:
+                        member = b'"later" : {"command" : "keep"}'
+                        start = written.index(b'"coldlocker"')
+                        end = written.index(b'}', start) + 1
+                        addition = b'\r\n\t' + member
+                        later = written[:end] + b',' + addition + written[end:]
+                        prefix = written[:start]
+                        if not prefix.rsplit(b'\n', 1)[-1].strip():
+                            prefix = prefix.rstrip(b' \t')
+                        expected = prefix + addition + written[end:]
+                        modified = later.replace(b'"command": ', b'"command" : ', 1)
+                    path.write_bytes(later)
+                    preview = run_undo(undo)
+                    self.assertEqual(path.read_bytes(), later)
+                    self.assertIn('Preview:', preview.stdout)
+                    path.write_bytes(modified)
+                    refusal = run_undo(undo, apply=True, check=False)
+                    self.assertNotEqual(refusal.returncode, 0)
+                    self.assertIn('modified', refusal.stderr)
+                    self.assertEqual(path.read_bytes(), modified)
+                    path.write_bytes(later)
+                    run_undo(undo, apply=True)
+                    self.assertEqual(path.read_bytes(), expected)
+
+    def test_undo_last_codex_server_preserves_unrelated_toml(self):
+        path = self.home / '.codex/config.toml'
+        for original, later in ((None, b''), (b'model = "fixture"\n', b'\n[ui]\nmode = "later"\n'),
+                                (b'[mcp_servers]\r\n', b'\r\n# later comment\r\n')):
+            with self.subTest(original=original):
+                path.unlink(missing_ok=True)
+                if original is not None:
+                    path.write_bytes(original)
+                self.output = io.StringIO()
+                self.assertEqual(self.run_connect(write=True, yes=True, agent=['codex']), 0)
+                undo, = printed_undos(self.output)
+                written = path.read_bytes()
+                current = written + later
+                path.write_bytes(current)
+                preview = run_undo(undo, check=False)
+                self.assertEqual(preview.returncode, 0, preview.stderr)
+                self.assertEqual(path.read_bytes(), current)
+                run_undo(undo, apply=True)
+                self.assertEqual(path.read_bytes(), written[:written.index(b'[mcp_servers.coldlocker]')] + later)
 
     def test_write_preserves_missing_trailing_newline_for_round_trip(self):
         path = self.home / '.claude.json'
@@ -720,6 +869,8 @@ class ConnectTests(unittest.TestCase):
         document = json.loads(written)
         del document['mcpServers']['coldlocker']
         self.assertEqual(json.dumps(document, indent=4).encode(), original)
+        run_undo(printed_undos(self.output)[0], apply=True)
+        self.assertEqual(path.read_bytes(), original)
 
     def test_write_keeps_trailing_newline_when_present(self):
         path = self.home / '.claude.json'
@@ -1116,8 +1267,19 @@ class RetireDirectTests(unittest.TestCase):
         for path, original in self.originals.items():
             backups = list(path.parent.glob(path.name + '.*.bak'))
             self.assertEqual([backup.read_bytes() for backup in backups], [original])
-        for command in undo:
-            subprocess.run(shlex.split(command), check=True)
+        for command, path in zip(undo, self.originals):
+            written = path.read_bytes()
+            modified = (written + b'[mcp_servers.later]\ncommand = "keep"\n' if path == self.codex else
+                        written.replace(b'"other":', b'"later": {}, "other":'))
+            path.write_bytes(modified)
+            refusal = run_undo(command, apply=True, check=False)
+            self.assertNotEqual(refusal.returncode, 0)
+            self.assertIn('retired or migrated', refusal.stderr)
+            self.assertEqual(path.read_bytes(), modified)
+            path.write_bytes(written)
+            self.assertIn('Preview:', run_undo(command).stdout)
+            self.assertEqual(path.read_bytes(), written)
+            run_undo(command, apply=True)
         for path, original in self.originals.items():
             self.assertEqual(path.read_bytes(), original)
 

@@ -77,8 +77,11 @@ def run(args, output, root):
     unsupported = set(requested) - set(available)
     if unsupported:
         raise ValueError('--remote has no researched instructions for: ' + ', '.join(sorted(unsupported)))
-    print(json.dumps({'print_only': True, 'url': url, 'scope': SCOPE, 'auth': 'OAuth; your Cloudflare Access one-time PIN in browser; never paste credentials into chat',
-                      'reviewed': '2026-10-20', 'clients': {name: available[name] for name in dict.fromkeys(requested)},
-                      'verify_prompt': VERIFY_PROMPT,
-                      'note': 'Only the nonsecret remote URL configuration was read when no --url was supplied. No network requests, client config reads/writes, OAuth login or schedules performed. Documentation support is not an account connection test.'}, indent=2), file=output)
+    result = {'print_only': True, 'url': url, 'scope': SCOPE, 'auth': 'OAuth; your Cloudflare Access one-time PIN in browser; never paste credentials into chat',
+              'reviewed': '2026-10-20', 'clients': {name: available[name] for name in dict.fromkeys(requested)},
+              'verify_prompt': VERIFY_PROMPT,
+              'note': 'Only the nonsecret remote URL configuration was read when no --url was supplied. No network requests, client config reads/writes, OAuth login or schedules performed. Documentation support is not an account connection test.'}
+    if getattr(args, 'json', False):
+        result.update(schema_version=1, exit_code=0)
+    print(json.dumps(result, indent=2), file=output)
     return 0

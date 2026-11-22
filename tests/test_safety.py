@@ -250,8 +250,9 @@ class CliTests(LockerCase):
     def test_safety_json_has_reason_per_finding(self):
         home = self.home(fixtures.build_malicious)
         result = self.run_hub('--safety', '--json', '--home', str(home), '--agent', 'codex')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         report = json.loads(result.stdout)
+        self.assertEqual(report.get('schema_version'), 1)
         self.assertEqual(list(report['agents']), ['codex'])
         for item in report['agents']['codex']:
             self.assertTrue(item['review'])
@@ -334,6 +335,21 @@ class CliTests(LockerCase):
         output = json.loads(result.stdout.splitlines()[-2])
         self.assertTrue({server['id'], connection['id']} <= set(output['imported']))
         self.assertTrue((self.local / 'connections/unknown-remote.json').is_file())
+
+    def test_json_import_keeps_only_unresolved_items_held(self):
+        home = self.home(fixtures.build_malicious)
+        items = self.scan(home)['items']
+        server = next(i['id'] for i in items if i['kind'] == 'mcp_server' and i['name'] == 'unknown-remote')
+        connection = next(i['id'] for i in items if i['kind'] == 'connection' and i['name'] == 'unknown-remote')
+        unselected = next(i['id'] for i in items if i['kind'] == 'skill' and i['status'] == 'needs_review')
+        result = self.run_hub('--home', str(home), '--platform', 'linux', '--import', '--yes', '--json',
+                              '--only', server, '--approve-risky', server, unselected)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(set(report['imported']), {server, connection})
+        self.assertIn(unselected, report['held_for_review'])
+        self.assertNotIn(connection, report['held_for_review'])
+        self.assertNotIn(server, report['held_for_review'])
 
     def test_rejected_item_output_includes_id_and_reason(self):
         home = self.home(fixtures.build_malicious)

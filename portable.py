@@ -1,4 +1,5 @@
 import errno
+import json
 import os
 import sys
 import time
@@ -15,13 +16,13 @@ def product_env(name, default=None, env=None):
     return env.get(name, env.get(legacy, default))
 
 
-def lock(stream, exclusive=True, wait=True):
+def lock(stream, exclusive=True, wait=True, offset=0):
     if fcntl:
         operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         fcntl.flock(stream, operation if wait else operation | fcntl.LOCK_NB)
         return
     import msvcrt
-    stream.seek(0)
+    stream.seek(offset)
     while True:
         try:
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
@@ -39,6 +40,10 @@ def restrict(stream, path):
         os.fchmod(stream.fileno(), 0o600)
     else:
         os.chmod(path, 0o600)
+
+
+def print_json(value):
+    print(json.dumps({**value, "schema_version": 1}, indent=2))
 
 
 def python_command():

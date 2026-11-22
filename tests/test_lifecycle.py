@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import io
 import json
 import os
@@ -68,7 +69,10 @@ class ListTests(LifecycleCase):
     def test_json_rows_carry_every_field(self):
         self.ship_rule()
         self.cli("import-skill", self.source)
-        rows = json.loads(self.run_hub("list", "--json"))
+        report = json.loads(self.run_hub("list", "--json"))
+        self.assertIsInstance(report, dict)
+        self.assertEqual(report.get("schema_version"), 1)
+        rows = report["items"]
         self.assertEqual({(r["kind"], r["name"], r["source"]) for r in rows},
                          {("rules", "shared", "shipped"), ("skills", "sample", "imported")})
         self.assertEqual({"kind", "name", "owner", "origin", "source"}, set(rows[0]))
@@ -76,10 +80,20 @@ class ListTests(LifecycleCase):
     def test_kind_filter(self):
         self.ship_rule()
         self.cli("import-skill", self.source)
-        rows = json.loads(self.run_hub("list", "--kind", "skills", "--json"))
+        rows = json.loads(self.run_hub("list", "--kind", "skills", "--json"))["items"]
         self.assertEqual([r["name"] for r in rows], ["sample"])
-        self.assertEqual(json.loads(self.run_hub("list", "--kind", "plugins", "--json")), [])
+        self.assertEqual(json.loads(self.run_hub("list", "--kind", "plugins", "--json"))["items"], [])
         self.run_hub("list", "--kind", "bogus", code=2)
+
+    def test_bad_kind_in_json_mode_reports_an_argument_error(self):
+        for flag in ("--json", "--js", "--json=true"):
+            with self.subTest(flag=flag):
+                result = subprocess.run([sys.executable, str(self.root / "hub.py"), "list", flag, "--kind", "bogus"],
+                                        cwd=self.root, env=self.environment, capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 2)
+                self.assertTrue(result.stdout.startswith("{"), result.stdout)
+                self.assertEqual(json.loads(result.stdout).get("schema_version"), 1)
+                self.assertIn("error: argument", result.stderr)
 
     def test_empty_catalog_says_so(self):
         self.assertIn("No items", self.run_hub("list"))
@@ -299,6 +313,100 @@ class RemoveTests(LifecycleCase):
 
 
 class UpdateTests(LifecycleCase):
+    def prepare_fourth_revision(self):
+        self.import_skill()
+        source = self.source / "nested/data.txt"
+        for revision in (b"second", b"third"):
+            source.write_bytes(revision)
+            self.import_skill()
+        source.write_bytes(b"fourth")
+        args = SimpleNamespace(command="import-skill", path=str(self.source), owner=None,
+                               origin="local-import", name=None, approve_risky=False)
+        return args, self.root / ".hub-store/history/skills/sample"
+
+    def test_enospc_reclaims_only_the_older_archive_and_retries(self):
+        args, history = self.prepare_fourth_revision()
+        oldest, predecessor = sorted(history.iterdir())
+        copytree = shutil.copytree
+        failures = []
+
+        def full_until_pruned(source, destination, *args, **kwargs):
+            if history in Path(destination).parents and oldest.exists():
+                failures.append(source)
+                reason = str(OSError(errno.ENOSPC, "No space left on device"))
+                raise shutil.Error([(str(source), str(destination), reason)])
+            return copytree(source, destination, *args, **kwargs)
+
+        with patch.object(shutil, "copytree", full_until_pruned):
+            hub.import_item(args, self.root)
+        self.assertEqual(len(failures), 1)
+        self.assertFalse(oldest.exists())
+        kept, newest = sorted(history.iterdir())
+        self.assertEqual(kept, predecessor)
+        self.assertEqual((newest / "skills/sample/nested/data.txt").read_bytes(), b"third")
+        self.assertEqual((self.local / "skills/sample/nested/data.txt").read_bytes(), b"fourth")
+
+    def test_refused_publication_preserves_both_archives(self):
+        args, history = self.prepare_fourth_revision()
+        before = self.tree()
+        manifest = (self.local / "manifest.json").read_bytes()
+        replace = Path.replace
+
+        def fail_manifest(path, target):
+            if path.name == "pending" and target == self.local / "manifest.json":
+                raise OSError("manifest publication failed")
+            return replace(path, target)
+
+        with patch.object(Path, "replace", fail_manifest), self.assertRaisesRegex(OSError, "publication failed"):
+            hub.import_item(args, self.root)
+        self.assertEqual(self.tree(), before)
+        self.assertEqual((self.local / "manifest.json").read_bytes(), manifest)
+        self.assertEqual((self.local / "skills/sample/nested/data.txt").read_bytes(), b"third")
+        self.assertEqual([path.read_bytes() for path in sorted(history.glob("*/skills/sample/nested/data.txt"))],
+                         [b"payload\n", b"second"])
+
+    def test_unwritable_history_refuses_update_and_preserves_saved_copies(self):
+        args, history = self.prepare_fourth_revision()
+        manifest = (self.local / "manifest.json").read_bytes()
+        archives = sorted(history.iterdir())
+        copytree = shutil.copytree
+
+        def full(source, destination, *args, **kwargs):
+            if history in Path(destination).parents:
+                raise PermissionError("history is read-only")
+            return copytree(source, destination, *args, **kwargs)
+
+        with patch.object(shutil, "copytree", full), self.assertRaisesRegex(ValueError, "history is read-only"):
+            hub.import_item(args, self.root)
+        self.assertEqual((self.local / "manifest.json").read_bytes(), manifest)
+        self.assertEqual((self.local / "skills/sample/nested/data.txt").read_bytes(), b"third")
+        self.assertEqual(sorted(history.iterdir()), archives)
+        self.assertEqual((archives[-1] / "skills/sample/nested/data.txt").read_bytes(), b"second")
+
+    def test_history_preview_matches_next_update_and_preserves_unowned_entries(self):
+        self.import_skill()
+        source = self.source / "nested/data.txt"
+        for revision in (b"second", b"third"):
+            source.write_bytes(revision)
+            self.import_skill()
+        history = self.root / ".hub-store/history/skills/sample"
+        oldest, predecessor = sorted(history.iterdir())
+        (history / "notes").mkdir()
+        (history / "20000101T000000000000Z").symlink_to(self.source, target_is_directory=True)
+        before = self.tree()
+        preview = self.run_hub("history", "skill", "sample")
+        self.assertEqual(self.tree(), before)
+        self.assertIn(f"Would prune {oldest.name}", preview)
+        self.assertIn(f"Keep {predecessor.name}", preview)
+        source.write_bytes(b"fourth")
+        self.import_skill()
+        self.assertFalse(oldest.exists())
+        self.assertTrue((history / "notes").is_dir())
+        self.assertTrue((history / "20000101T000000000000Z").is_symlink())
+        copies = sorted(path for path in history.glob("*/skills/sample/nested/data.txt"))
+        self.assertEqual([path.read_bytes() for path in copies], [b"second", b"third"])
+
+
     def test_update_refuses_symlinked_history_and_preserves_old_content(self):
         self.import_skill()
         before = (self.local / "skills/sample/SKILL.md").read_bytes()
@@ -328,6 +436,21 @@ class UpdateTests(LifecycleCase):
         self.import_skill()
         self.assertFalse((self.root / ".hub-store/history").exists())
 
+    def test_routine_update_repairs_missing_prompt_and_archives_existing_definition(self):
+        source = self.routine()
+        self.cli("import-routine", source)
+        live = self.local / "routines/nightly"
+        before = (live / "routine.json").read_bytes()
+        (live / "prompt.md").unlink()
+        self.write_to(source, {**json.loads(source.read_bytes()), "description": "Updated"})
+
+        self.cli("import-routine", source)
+        self.assertEqual(json.loads((live / "routine.json").read_bytes())["description"], "Updated")
+        self.assertEqual((live / "prompt.md").read_bytes(), b"Fixture prompt\n")
+        saved, = (self.root / ".hub-store/history/routines/nightly").glob("*/routines/nightly")
+        self.assertEqual([path.name for path in saved.iterdir()], ["routine.json"])
+        self.assertEqual((saved / "routine.json").read_bytes(), before)
+
     def test_routine_prompt_change_keeps_previous_prompt(self):
         routine = self.routine()
         self.cli("import-routine", routine)
@@ -335,6 +458,8 @@ class UpdateTests(LifecycleCase):
         self.cli("import-routine", routine)
         kept = list((self.root / ".hub-store/history/routines/nightly").glob("*/routines/nightly/prompt.md"))
         self.assertEqual([p.read_bytes() for p in kept], [b"Fixture prompt\n"])
+        self.assertEqual(kept[0].with_name("routine.json").read_bytes(),
+                         (self.local / "routines/nightly/routine.json").read_bytes())
 
     def test_failed_update_keeps_no_history(self):
         self.import_skill()

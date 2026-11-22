@@ -593,7 +593,7 @@ def dispatch(request, root=ROOT):
     return response
 
 
-def main():
+def main(root=ROOT, *, log_calls=True):
     sys.stdin.reconfigure(encoding="utf-8")
     client = 'unknown'
     for line in sys.stdin:
@@ -605,15 +605,15 @@ def main():
                 params = request.get('params', {})
                 info = params.get('clientInfo', {}) if isinstance(params, dict) else {}
                 client = info.get('name', 'unknown') if isinstance(info, dict) else 'unknown'
-            response = dispatch(request)
+            response = dispatch(request, root)
         except (ValueError, UnicodeError):
             response = {"jsonrpc": "2.0", "id": None, **error(-32700, "Parse error")}
-        if isinstance(request, dict):
+        if log_calls and isinstance(request, dict):
             params = request.get('params', {})
             tool = params.get('name') if isinstance(params, dict) and request.get('method') == 'tools/call' else None
             try:
                 import calllog
-                calllog.append(ROOT, client, request.get('method'), tool, (time.monotonic() - started) * 1000)
+                calllog.append(root, client, request.get('method'), tool, (time.monotonic() - started) * 1000)
             except (ImportError, OSError, ValueError, TypeError):
                 pass
         if response is not None:
@@ -621,4 +621,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--no-call-log", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    main(args.root, log_calls=not args.no_call_log)

@@ -458,6 +458,34 @@ To start sessions without development context, launch the client with
 UserPromptSubmit then inject nothing: no briefing, lessons, footer or chained
 output. Every guard still runs as in a normal session. Only the value `1` turns it on.
 
+### Loop guard
+
+In work mode the Coldlocker hook denies a tool call that has already failed 3
+times in a row with the same input, the same error and an unchanged workspace, so
+the 4th try gets a reason instead of another run. Claude Code reports failures
+through `PostToolUseFailure`, which the installer registers for Claude only;
+Codex has no failure event, so the loop guard never denies there. Each failure
+counts once, matched to its own pending call by `tool_use_id`; a failure that
+matches no pending call is ignored. Read-only lookups such as Read and Grep keep
+their own count, so they neither hide nor reset a Bash loop. Any other call, a
+success, an interrupt, a `chat:` or `work:` switch or any workspace change starts
+the count again. The workspace is checked before and after every call, and a
+failure counts only when both checks are known and equal. The check reads git
+`HEAD`, the index, the paths `diff-index` reports and every untracked file, and
+hashes those files' modes and raw contents itself, so no git filter or diff
+driver runs. If git fails, the folder is not a repository, a file is marked
+assume-unchanged or skip-worktree, any path has a `filter` attribute, the index
+has a submodule, a file changes while it is read, or the files to hash exceed
+16 MiB, the workspace is unknown: the call is allowed and the count restarts.
+The guard is off in Chat mode. It keeps only hashes, in a private
+`coldlocker-loop-<uid>` folder under `$XDG_RUNTIME_DIR` (or the system temp
+folder), with files named from hashed session IDs, updated under one folder
+lock. Workspace checks run outside the lock. If the lock stays busy for 5
+seconds, the call is allowed and that session's count is dropped. It refuses a
+loop folder that resolves into, or contains, `~/.coldlocker` or Coldlocker's
+state folder, ignores records older than a day and keeps at most 512 files. It
+does nothing on systems without POSIX user IDs and `fcntl` locking.
+
 ### Owner guard switches
 
 The owner turns guards on or off in `~/.coldlocker/guards.json`. The guards are

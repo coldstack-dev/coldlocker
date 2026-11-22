@@ -44,14 +44,14 @@ class ScanIsolationTests(unittest.TestCase):
 
     def test_alternate_home_never_calls_crontab_or_executor(self):
         code, crontab_calls, sessions, error = self.scan()
-        self.assertEqual((code, crontab_calls, sessions), (0, 0, 0))
+        self.assertEqual((code, crontab_calls, sessions), (1, 0, 0))
         self.assertEqual(len(error.strip().splitlines()), 1)
         self.assertIn('--live', error)
 
     @unittest.skipIf(os.name == 'nt', 'the crontab stub is a POSIX shell script and Windows scans never read crontab')
     def test_live_flag_enables_crontab_and_executor(self):
         code, crontab_calls, sessions, error = self.scan('--live')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertGreaterEqual(crontab_calls, 1)
         self.assertEqual(sessions, 1)
         self.assertEqual(error, '')
@@ -60,7 +60,7 @@ class ScanIsolationTests(unittest.TestCase):
     def test_real_home_stays_live(self):
         with patch('pathlib.Path.home', return_value=self.home):
             code, crontab_calls, sessions, error = self.scan(home=self.home)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertGreaterEqual(crontab_calls, 1)
         self.assertEqual(sessions, 1)
         self.assertEqual(error, '')

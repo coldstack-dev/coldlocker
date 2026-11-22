@@ -111,11 +111,13 @@ These gates need external prerequisites and are not claimed:
 
 - Real provider OAuth or bearer, which needs an authorized, harmless integration
   and the private flow in [mcp-auth.md](mcp-auth.md).
-- Model-driven calls in Cursor and OpenCode, which need an authorized login in a
-  disposable client home.
+- Model-driven calls in Cursor.
 - Native Windows and macOS. CI currently runs on Linux only. The gateway supports
   Linux and macOS; Windows uses the stdio route.
 - Live Executor and Composio integrations.
+
+The separate [OpenCode use journey](product-acceptance.md#opencode-use-journey)
+records model-driven use in OpenCode.
 
 The protocol processes share one raw HTTP client, so they prove shared
 hub-credential use, not a model running a tool in a product client; the summary

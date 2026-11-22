@@ -60,7 +60,7 @@ class PackTests(unittest.TestCase):
             self.assertEqual(state(fixture), {'version': 1, 'enabled': []})
             self.assertIn(f'pstack  off  {PSTACK} skills', fixture.cli('pack', 'list').stdout)
             self.assertEqual(['catalog-sample', 'hub-discover'],
-                             [row['name'] for row in json.loads(fixture.cli('list', '--kind', 'skills', '--json').stdout)])
+                             [row['name'] for row in json.loads(fixture.cli('list', '--kind', 'skills', '--json').stdout)['items']])
             self.assertIn(f'Added pack pstack: {PSTACK} shipped skills', fixture.cli('pack', 'add', 'pstack').stdout)
             names, size = list_skills(fixture)
             self.assertEqual(names, sorted(SHIPPED + ['catalog-sample']))

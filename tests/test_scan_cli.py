@@ -36,11 +36,26 @@ class ScanCLITests(unittest.TestCase):
             code = args.action(args)
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def test_json_import_success_and_refusal(self):
+        empty = Path(self.temp.name) / 'empty'
+        empty.mkdir()
+        self.home = empty
+        code, output, _ = self.command('--import', '--json')
+        self.assertEqual(code, 1)
+        self.assertTrue(output.startswith('{'), output)
+        self.assertEqual(json.loads(output).get('schema_version'), 1)
+        code, output, _ = self.command('--import', '--yes', '--json')
+        self.assertEqual(code, 0)
+        report = json.loads(output)
+        self.assertEqual(report.get('schema_version'), 1)
+        self.assertEqual(report['imported'], [])
+
     def test_dry_run_json_and_human_do_not_write(self):
         before = snapshot(self.home), snapshot(self.root)
         code, output, error = self.command('--json')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         report = json.loads(output)
+        self.assertEqual(report.get('schema_version'), 1)
         self.assertEqual(report['version'], 1)
         self.assertNotIn(CANARY, output + error)
         code, output, error = self.command()
@@ -68,7 +83,7 @@ class ScanCLITests(unittest.TestCase):
                     (nested / 'SKILL.md').write_text(
                         '---\nname: nested-skill\ndescription: Nested fixture\n---\nBody.\n', encoding='utf-8')
                 code, output, _ = self.command('--json')
-                self.assertEqual(code, 0)
+                self.assertEqual(code, 2 if truncated else 1)
                 report = json.loads(output)
                 names = {item['name'] for item in report['items']}
                 self.assertIn('boundary-skill', names)
@@ -85,6 +100,15 @@ class ScanCLITests(unittest.TestCase):
                     self.assertEqual(warnings, [])
                     self.assertNotIn('Incomplete inventory: ~/.claude/skills', human)
 
+    def test_projects_root_cap_reports_incomplete_inventory(self):
+        projects = Path(self.temp.name) / 'projects'
+        projects.mkdir()
+        for number in range(1001):
+            (projects / f'fixture-{number}').touch()
+        code, output, _ = self.command('--projects-root', str(projects), '--json')
+        self.assertEqual(code, 2)
+        self.assertIn({'source': '<external>/projects', 'limit': 1000}, json.loads(output)['incomplete_inventory'])
+
     def test_deep_assets_of_found_skill_do_not_report_depth_truncation(self):
         skill = self.home / '.claude/skills/asset-fixture'
         assets = skill / 'assets/a/b/c/d/e'
@@ -93,7 +117,7 @@ class ScanCLITests(unittest.TestCase):
         (skill / 'SKILL.md').write_text(
             '---\nname: asset-fixture\ndescription: Skill with assets\n---\nBody.\n', encoding='utf-8')
         code, output, _ = self.command('--json')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         report = json.loads(output)
         self.assertTrue(any(item['kind'] == 'skill' and item['name'] == 'asset-fixture' for item in report['items']))
         self.assertFalse(any(row['source'] == '~/.claude/skills' for row in report['incomplete_inventory']))
@@ -106,7 +130,7 @@ class ScanCLITests(unittest.TestCase):
         (skill / 'SKILL.md').write_text(
             '---\nname: payload-fixture\ndescription: Skill with deep assets\n---\nBody.\n', encoding='utf-8')
         code, output, _ = self.command('--json')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         report = json.loads(output)
         item = next(item for item in report['items'] if item['name'] == 'payload-fixture')
         self.assertEqual(item['kind'], 'skill')
@@ -122,7 +146,7 @@ class ScanCLITests(unittest.TestCase):
         sources.mkdir(parents=True)
         (sources / 'example.txt').write_text('Local fixture.\n', encoding='utf-8')
         code, output, _ = self.command('--json')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         report = json.loads(output)
         self.assertTrue(any(item['kind'] == 'plugin' and item['name'] == 'source-fixture' for item in report['items']))
         self.assertFalse(any(row['source'] == '~/.claude/plugins' for row in report['incomplete_inventory']))
@@ -133,7 +157,7 @@ class ScanCLITests(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / 'note.md').write_text('Local fixture.\n', encoding='utf-8')
         code, output, _ = self.command('--json')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         sources = {row['source'] for row in json.loads(output)['incomplete_inventory']}
         self.assertTrue(sources.isdisjoint({'~/.t3/userdata', '~/.codex/rules', '~/.codex/prompts'}), sources)
 
@@ -232,6 +256,21 @@ class ScanCLITests(unittest.TestCase):
         self.assertNotIn('item could not be imported', error)
         self.assertEqual(list(elsewhere.iterdir()), [])
 
+    def test_json_import_protected_destination_reports_failure(self):
+        catalog = self.root / '.hub-store/catalog'
+        catalog.mkdir(parents=True)
+        (catalog / 'rules').write_text('Preserve this file', encoding='utf-8')
+        _, output, _ = self.command('--json')
+        item = next(i for i in json.loads(output)['items'] if i['status'] == 'new' and i['kind'] == 'rule')
+        code, output, error = self.command('--import', '--yes', '--json', '--only', item['id'])
+        self.assertEqual(code, 2)
+        report = json.loads(output)
+        self.assertIn(f"Rejected {item['id']}:", error)
+        self.assertNotIn('item could not be imported', error)
+        self.assertEqual(report['errors'], [item['id']])
+        self.assertEqual(report['rejected'], [item['id']])
+        self.assertEqual((catalog / 'rules').read_text(encoding='utf-8'), 'Preserve this file')
+
     def test_only_selects_one_and_yes_skips_confirmation(self):
         _, output, _ = self.command('--json')
         item = next(i for i in json.loads(output)['items'] if i['status'] == 'new' and i['kind'] == 'rule')
@@ -255,7 +294,7 @@ class ScanCLITests(unittest.TestCase):
 
     def test_agent_filter_updates_counts_and_selection(self):
         code, output, _ = self.command('--agent', 'opencode', '--json')
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         report = json.loads(output)
         self.assertEqual(set(report['agents']), {'opencode'})
         self.assertTrue(all(i['agent'] == 'opencode' for i in report['items']))
@@ -275,9 +314,10 @@ class ScanCLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(output.rstrip().splitlines()[-1], 'C:\\Python312\\python.exe hub.py connect')
 
-    def test_cli_invalid_input_exits_one_without_exception_details(self):
+    def test_cli_invalid_input_exits_two_without_exception_details(self):
         process = subprocess.run([sys.executable, str(ROOT / 'hub.py'), 'scan', '--home', str(self.home / 'missing'), '--json'], capture_output=True, text=True, encoding='utf-8')
-        self.assertEqual(process.returncode, 1)
+        self.assertEqual(process.returncode, 2)
+        self.assertEqual(json.loads(process.stdout).get('schema_version'), 1)
         self.assertNotIn('Traceback', process.stderr)
         self.assertNotIn(str(self.home), process.stderr)
 

@@ -83,6 +83,24 @@ ENTRY (routines use `id` instead of `name`):
 - Without that file, an install that already has `.hub-store/catalog/manifest.json`, `.hub-store/links.json` or `.hub-store/calls.jsonl` was set up before packs existed, so every pack is on. Otherwise none are. The first import, link or catalog call writes the file, so later state can't change the answer.
 - A catalog root without `packs.json` lists every shipped skill, and `check` and `doctor` report `SKIP: skill packs`.
 
+## coldlocker-pack.json
+
+```json
+{
+  "schema_version": 1,
+  "name": "starter",
+  "entries": [
+    {"kind": "skill", "path": "skills/greet", "sha256": "<hash>"},
+    {"kind": "rule", "path": "rules/tidy.md", "sha256": "<hash>"},
+    {"kind": "mcp", "path": "mcp/example.json", "sha256": "<hash>"}
+  ]
+}
+```
+
+- Lives at the root of a GitHub repository installed with `hub.py pack install`. `name` is an entry name of at most 58 characters; `kind` is `skill`, `rule` or `mcp`.
+- `path` is relative to the repository root, using `/`, with no `.`, `..`, empty parts or symlinks. Each path appears once.
+- `sha256` is the content hash `hub.py` records in `manifest.json`: the file's SHA-256, or for a skill directory the SHA-256 of its sorted `<relative path>\0<file sha256>\n` lines. An entry without it is held; install prints the hash to pin.
+
 ## policy-pack.json
 
 ```json

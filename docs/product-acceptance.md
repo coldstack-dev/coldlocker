@@ -78,6 +78,54 @@ python3 -m unittest discover -s tests -p test_executor_connector.py -k test_wron
 For a loopback call through MCPHub, see the verification instructions in the
 [Composio connector guide](composio.md#composio-upstream--local-gateway).
 
+## Replay the local journey in a disposable VM
+
+Use a committed maintainer checkout in a fresh Linux builder VM with Git,
+Python 3.11+, Node.js 22+, npm, `systemd-detect-virt`, and network access to the
+npm registry. Transfer the checkout as a Git bundle. Start with a guest user
+that has no Claude Code or Codex state. Keep host credentials and catalog
+state out of the guest.
+
+1. In the guest, start a local inference server that supports tool calls over
+   Anthropic Messages and OpenAI Responses. This example uses
+   [llama-server b12240](https://github.com/ggml-org/llama.cpp/tree/b12240/tools/server)
+   and the [Qwen3-4B Instruct GGUF](https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF)
+   with Q4_K_M quantization.
+
+   ```sh
+   llama-server --model model.gguf --alias qwen3-4b --host localhost --port 18080 \
+     --ctx-size 32768 --parallel 2 --temp 0 --no-webui
+   ```
+
+2. Run the journey from the checkout. It creates a fresh clone and HOME,
+   installs Claude Code and Codex CLI via npm, and captures their versions.
+   The seed files live in a separate inventory home so both clients read the
+   central copy.
+
+   ```sh
+   mkdir -p .scratch
+   python3 -B tools/product_acceptance.py --disposable \
+     --model-url http://localhost:18080 --model qwen3-4b > .scratch/product-acceptance.json
+   ```
+
+3. Save the JSON receipt before deleting the VM. Exit 0 means both clients
+   used the guide before and after the central edit, and one client ran the
+   disabled routine on request and reached the authenticated fixture via the
+   gateway. Each use step gets its own prompt and up to three attempts. Exit 1
+   means a journey check failed. Exit 2 means a required client step is
+   incomplete. Without the model options, the script runs setup and the
+   protocol probe and records model use as incomplete.
+
+The receipt lists the seeded inventory, including the unpinned MCP entry
+held for review. The gateway fixture returns HTTP 401 without its guest-minted
+key and exposes one read-only addition tool. Claude Code uses the catalog
+tools and calls the gateway. Codex uses its built-in MCP resource reader and
+loads short task instructions from the temporary checkout. Both clients
+return markers from the skill and guide in their answers. New sessions read
+the revised content through the existing client registrations. Hosted
+publishing, existing Composio accounts, and automatic scheduling are outside
+this run.
+
 ## Compatibility and evidence
 
 The initial acceptance targets and current evidence are:
@@ -86,7 +134,7 @@ The initial acceptance targets and current evidence are:
 | --- | --- | --- | --- |
 | Claude Code | Local stdio catalog | Real synthetic skill/supporting-file use; fresh model session observed the shared guide and routine-prompt update | Independent fresh-user setup |
 | Codex CLI | Local stdio catalog | Real model-driven read/use task; later T3-triggered CLI run fetched and executed the current routine and supporting skill | Independent fresh-user setup; native app scheduler remains separate |
-| OpenCode | Local stdio catalog | Clean [scripted run](#opencode-use-journey) discovered an imported skill, retrieved its supporting file and returned a result computed from the file | Model-driven skill use, content updates, routine execution and upstream gateway execution |
+| OpenCode | Local stdio catalog | Two fresh [model sessions](#opencode-use-journey) used the same imported skill and observed a central edit to its supporting guide | Independent fresh-user setup, routine execution and upstream gateway execution |
 | Hosted Bot | User's remote catalog and platform routine handoff | Mac app connection screenshot; user-reported initial and updated skill/supporting-file results match source; routine and prompt fetched after an update | Independent fresh-user setup; native scheduling is optional and unproved |
 | T3 with local Codex and Claude Code | Native T3 manual trigger invoking controlled local CLI jobs and stdio MCP | Both clients fetched the central routine and returned its expected result; task verified disabled afterward | Automatic interval firing, T3 remote OAuth and native Codex/Claude app schedulers not proved |
 | Dots, hosted Muse, MausBot, T3 remote OAuth | Capability-specific handoff or fallback | Remote capability unconfirmed in the current project records | Establish a supported path before advertising compatibility |
@@ -144,27 +192,25 @@ successful local Worker test or an unauthenticated rejection is insufficient.
 
 ### OpenCode use journey
 
-On 2026-11-20, OpenCode 1.19.6 ran on Linux with Python 3.14.4, a fresh
-HOME and XDG directories, a copied catalog runtime and a synthetic imported
-skill. The client used a one-run MCP configuration for the local
-`mcp_endpoint.py` and allowed only the two catalog tools.
+On 2026-11-21, OpenCode 1.19.6 ran in a fresh Linux VM with a clean client
+home and a Qwen3-4B Instruct model on loopback. The run reused the synthetic
+parcel skill from the local journey. After the model config existed,
+`python3 hub.py connect --agent opencode --write --yes` added the stdio
+catalog entry.
 
-`opencode run --pure --format json --print-logs --model local/fixture` asked
-OpenCode to find a skill for a parcel task and follow its instructions. The
-JSON events show two completed calls, `coldlocker_hub_list_skills` followed by
-`coldlocker_hub_get_item` for the `catalog-sample` skill. The second result
-included `references/guide.md` with a generated audit marker and the counts
-7 and 4. The client printed `birch-025f66 | parcels=11` and exited 0.
+Two separate `opencode run --pure --format json` sessions received the same
+prompt. Each session fetched the named skill with a native
+`coldlocker_hub_get_item` call that returned both `SKILL.md` and
+`references/guide.md`. The first response used the batch code and guide
+marker and returned `parcels=11`. After one edit to the guide and
+`scan --import --update`, the second response used the same batch code,
+the new marker, and `parcels=14`. Both sessions used the same stdio entry.
 
-The scripted loopback provider chose the two calls and computed the answer
-from their returned content. Model-driven skill use remains unknown. The two
-unauthenticated hosted model attempts hit the free usage limit before making a
-catalog tool call.
-
-In the empty HOME, `python3 hub.py connect --agent opencode` printed the
-stdio entry for manual setup and created no client config. The
+An earlier run on 2026-11-20 used a scripted provider to check the tool path.
+In that run, with no OpenCode config, `python3 hub.py connect --agent opencode`
+printed the stdio entry for manual setup. The
 [stdio handshake](clients.md#try-without-touching-your-config) checks catalog
-access without a model login.
+access without a model.
 
 ## Release boundary
 

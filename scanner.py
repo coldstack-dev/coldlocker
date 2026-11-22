@@ -22,7 +22,7 @@ from checks.scanners.schedules import ZONE, WEEKDAYS, calendar_field, calendar_s
 from checks.scanners.servers import SECRET_KEY, SECRET_SHAPES, environment_headers
 from checks.scanners.system import default_runner
 from importers import LIMIT, selected_path, skill_package
-from portable import python_command
+from portable import print_json, python_command
 
 ROOT = Path(__file__).resolve().parent
 
@@ -31,8 +31,8 @@ def scan(home, projects=(), platform=None, env=None, runner=None, root=None):
     return Inventory(home, projects, platform, env, runner, ROOT if root is None else root).discover()
 
 
-def apply(root, report, selected_ids, store, home, projects=(), platform=None, env=None, runner=None, approved=(), live=True, update=False):
-    from hub import import_item, ordinary_parents, write_json
+def apply(root, report, selected_ids, store, home, projects=(), platform=None, env=None, runner=None, approved=(), live=True, update=False, *, diagnostics=False):
+    from hub import Refused, import_item, ordinary_parents, write_json
     from types import SimpleNamespace
     root = Path(root)
     inventory = Inventory(home, projects, platform, env, runner, root, live)
@@ -57,6 +57,7 @@ def apply(root, report, selected_ids, store, home, projects=(), platform=None, e
     sources = scan_sources(root)
     rejected = [i['id'] for i in report['items'] if i['id'] in selected and i['status'] == 'needs_review' and not cleared(i)]
     reasons = {}
+    errors = []
 
     def record(item):
         kind, name = item['kind'], item['name']
@@ -126,10 +127,15 @@ def apply(root, report, selected_ids, store, home, projects=(), platform=None, e
         except ERRORS as error:
             rejected.append(identity)
             reasons[identity] = str(error) or type(error).__name__
+            if not isinstance(error, Refused):
+                errors.append(identity)
     if imported or updated or adopted:
         write_json(root / SCAN_SOURCES, sources)
-    return {'imported': imported, 'updated': updated, 'rejected': rejected, 'reasons': reasons,
-            'counts': {'imported': len(imported), 'rejected': len(rejected)}}
+    result = {'imported': imported, 'updated': updated, 'rejected': rejected, 'reasons': reasons,
+              'counts': {'imported': len(imported), 'rejected': len(rejected)}}
+    if diagnostics:
+        result.update(errors=errors, incomplete_inventory=fresh['incomplete_inventory'])
+    return result
 
 
 def human(report, all_items=False, missing=None, hint=False):
@@ -210,14 +216,20 @@ def cli(args):
     from store import FileStore
     args.approve_risky = [identity for group in args.approve_risky for identity in group]
     projects = list(args.project)
+    truncated_projects = False
     if args.projects_root:
         base = selected_path(Path(args.projects_root))
-        projects += [p for p in itertools.islice(base.iterdir(), 1000) if p.is_dir() and not p.is_symlink() and p.name not in EXCLUDE]
+        entries = list(itertools.islice(base.iterdir(), 1001))
+        truncated_projects = len(entries) > 1000
+        projects += [p for p in entries[:1000] if p.is_dir() and not p.is_symlink() and p.name not in EXCLUDE]
     live = args.live or os.path.realpath(args.home) == os.path.realpath(Path.home())
     if not live:
         print('Skipped crontab and Executor discovery: --home is not the real home. Pass --live to include them.', file=sys.stderr if args.json or args.safety else sys.stdout)
     inventory = Inventory(args.home, projects, args.platform, None, None, ROOT, live)
+    if truncated_projects:
+        inventory.walk_limited(base, 1000)
     report = inventory.discover()
+    incomplete = report['incomplete_inventory']
     if args.agent:
         report['items'] = [i for i in report['items'] if i['agent'] in args.agent]
         report['agents'] = {k: v for k, v in report['agents'].items() if k in args.agent}
@@ -229,37 +241,77 @@ def cli(args):
     validators.require(args.do_import or not args.approve_risky, '--approve-risky requires --import')
     if args.safety:
         validators.require(not args.do_import and not args.only and not args.yes and not args.update, '--safety is read-only and cannot be combined with import options')
-        print(json.dumps(safety_report(report), indent=2)) if args.json else safety_human(report)
+        if args.json:
+            result = safety_report(report)
+            print_json({**result, 'incomplete_inventory': incomplete})
+            return 2 if incomplete else int(bool(result['summary']['findings']))
+        safety_human(report)
         return 0
     if not args.do_import:
         validators.require(not args.only and not args.yes and not args.update, '--only, --yes and --update require --import')
-        print(json.dumps(report, indent=2)) if args.json else human(report, args.all, missing, hint)
+        if args.json:
+            print_json(report)
+            return 2 if incomplete else int(any(i['review'] or i['status'] == 'conflict' for i in report['items']))
+        human(report, args.all, missing, hint)
         return 0
-    human(report, args.all, missing, hint)
+    if not args.json:
+        human(report, args.all, missing, hint)
     if not args.yes:
         if not sys.stdin.isatty():
-            print('Import refused: non-interactive input requires --yes.', file=sys.stderr)
+            reason = 'Import refused: non-interactive input requires --yes.'
+            if args.json:
+                print_json({'error': reason})
+            print(reason, file=sys.stderr)
             return 1
-        if input('Import all selected importable items? [y/N] ').lower() not in ('y', 'yes'):
+        prompt = 'Import all selected importable items? [y/N] '
+        if args.json:
+            print(prompt, end='', file=sys.stderr, flush=True)
+            prompt = ''
+        try:
+            answer = input(prompt)
+        except EOFError:
+            if not args.json:
+                raise
+            answer = ''
+        if answer.lower() not in ('y', 'yes'):
+            if args.json:
+                print_json({'error': 'Import cancelled.'})
             return 1
     reviewed = {i['id'] for i in report['items'] if i['status'] == 'needs_review'}
     validators.require(set(args.approve_risky) <= reviewed, '--approve-risky needs ids shown as needs review')
     updates = [i['id'] for i in report['items'] if args.update and i.get('updatable')]
     selected = args.only if args.only is not None else [i['id'] for i in report['items'] if i['importable'] and i['kind'] != 'plugin'] + list(args.approve_risky) + updates
     validators.require(set(selected) <= {i['id'] for i in report['items']}, 'unknown selection')
-    result = apply(ROOT, report, selected, FileStore(ROOT), args.home, projects, args.platform, approved=args.approve_risky, live=live, update=args.update)
-    held = sorted(reviewed - set(args.approve_risky))
+    result = apply(ROOT, report, selected, FileStore(ROOT), args.home, projects, args.platform,
+                   approved=args.approve_risky, live=live, update=args.update, diagnostics=args.json)
+    if args.json:
+        completed = set(result['imported']) | set(result['updated'])
+        result['rejected'] = sorted(set(selected) - completed)
+        result['counts']['rejected'] = len(result['rejected'])
+        held = reviewed | {i['id'] for i in report['items'] if i['status'] == 'skipped' and i['review']}
+        held -= completed
+        conflicts = {i['id'] for i in report['items'] if i['status'] == 'conflict'} - completed
+        incomplete += [row for row in result['incomplete_inventory'] if row not in incomplete]
+    else:
+        held = reviewed - set(args.approve_risky)
     if held:
-        print(f'{len(held)} item(s) need review and were not imported; inspect them with --safety, then pass --approve-risky <id>.', file=sys.stderr)
-    print(json.dumps(result))
-    for identity in result['updated']:
-        item = next(item for item in report['items'] if item['id'] == identity)
-        print(f"Updated {item['kind'].replace('_', ' ')} {item['name']} from {item['source']}")
+        hint = 'inspect them with --safety' if args.json else 'inspect them with --safety, then pass --approve-risky <id>'
+        print(f'{len(held)} item(s) need review and were not imported; {hint}.', file=sys.stderr)
+    if not args.json:
+        print(json.dumps(result))
+        for identity in result['updated']:
+            item = next(item for item in report['items'] if item['id'] == identity)
+            print(f"Updated {item['kind'].replace('_', ' ')} {item['name']} from {item['source']}")
     for identity in result['rejected']:
         item = next((item for item in report['items'] if item['id'] == identity), None)
         reasons = '; '.join(f"{finding['reason']} ({finding['location']})" for finding in item.get('review', [])) if item else ''
         reasons = reasons or result['reasons'].get(identity)
         print(f"Rejected {identity}: {reasons or 'item could not be imported'}", file=sys.stderr)
+    if args.json:
+        result.pop('reasons')
+        print_json({**result, 'held_for_review': sorted(held), 'conflicts': sorted(conflicts),
+                    'incomplete_inventory': incomplete})
+        return 2 if incomplete or result['errors'] else int(bool(held or conflicts or result['rejected']))
     if (ROOT / 'connect.py').is_file():
         print(python_command() + ' hub.py connect')
     return 1 if result['rejected'] else 0

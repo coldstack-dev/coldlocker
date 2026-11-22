@@ -34,7 +34,9 @@ backed-up write. An entry counts only when a scan of that same settings file
 finds it identical to its catalog copy (same command, arguments, environment
 and headers, with the name normalized as import normalizes it); a same-name
 entry that differs stays, whichever client or scope it is in. The printed
-`Undo:` command restores the previous file.
+`Undo:` command previews restoration of the retired servers. Append `--apply` to
+restore the original bytes. If the file changed after retirement, undo refuses
+and leaves it intact.
 Project-level entries are untouched. A server whose name is another catalog
 server's name plus a `-` suffix is never retired, because gateway tool names
 can't tell the two apart. When the gateway requires a token,
@@ -113,7 +115,14 @@ and `hub_get_item`. Connect creates no skill links; use `hub.py link --target
 ### Write safety
 
 - An existing file gets a timestamped `.bak` sibling and an atomic replace; a new
-  file gets no backup. Connect prints `Backup: <path>` and an `Undo:` command.
+  file gets no backup. Connect prints `Backup: <path>` for each backup.
+  Save the `Undo:` command printed for each changed config. Run it to preview,
+  then append `--apply` to confirm. With an unchanged existing config it
+  restores the exact original bytes. After later edits it removes only matching
+  registrations and preserves surrounding bytes. Modified registrations, and
+  later edits after connect replaced, retired, or renamed a registration, require
+  manual review.
+  A config created by connect stays in place after its registrations are removed.
   Backups may contain credentials; keep them private.
 - Destinations are rechecked after preparing the replacement and after the
   backup; a change aborts the write. Symlinked destinations or parents and
@@ -218,11 +227,12 @@ codex exec --ignore-user-config --ephemeral --skip-git-repo-check -s read-only \
   'Call hub_list_skills and report the names.'
 ```
 
-Model-driven runs need the client signed in. Without a login they stop before
-any tool call (Codex 401, OpenCode free models 403 from headless runs, Claude
-Code "Not logged in"); none of these is an Coldlocker fault. The login-free
-check is the stdio handshake. Run it from the checkout and replace `<SKILL_NAME>`
-with a name from `python3 hub.py list`:
+Model-driven runs need a configured model. For OpenCode, a loopback inference
+endpoint works without signing in. Hosted model requests can fail before any
+tool call (Codex 401, OpenCode free models 403 in headless runs, Claude Code
+"Not logged in"). To check the catalog without a model, use the stdio
+handshake. Run it from the checkout and replace `<SKILL_NAME>` with a name from
+`python3 hub.py list`:
 
 ```sh
 HUB_DIR="$PWD"

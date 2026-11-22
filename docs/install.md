@@ -163,6 +163,13 @@ routine with `hub_get_item` (`kind` is `skill`, `rule` or `routine`, plus its
 imported tool; catalog discovery alone does not prove tool execution or shared
 auth.
 
+To undo a connection, run the `Undo:` command printed by `connect --write`.
+It previews the change. Append `--apply` to run it. Coldlocker checks the
+registration's bytes again before removing it. If you added another server,
+its settings and formatting stay in place. A modified registration requires
+manual removal. For older installations that printed a copy command, compare
+the backup with the current config and remove the registration by hand.
+
 Credentials and gateway state live in gitignored `.hub-store/` (directories 700,
 files 600); the npm runtime lives in gitignored `.scratch/`. `.hub-store/` and
 local `config.json` must never be committed. See [MCP authentication](mcp-auth.md).
