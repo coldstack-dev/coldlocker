@@ -300,7 +300,7 @@ visibility, no command substitutions or environment changes, and at most one
 leading `cd` to a literal absolute path. Companion commands are limited to
 `true`, `false`, `:`, `echo`, `pwd`, `cat`, `head`, `tail` and `wc`. Run commits
 and other Git operations in separate calls, because their hooks and configuration
-can change the destination before a push. Public pushes require a standalone
+can change the destination before a push. Public branch pushes require a standalone
 `git push --force-with-lease=refs/heads/<branch>:<expected_public_head> <remote> <sha>:refs/heads/<branch>`
 (an empty `<expected_public_head>` for a new branch), where `<sha>` is the full
 40-character commit, and a Coldrelease PASS in the folder
@@ -329,6 +329,20 @@ An invalid or symlinked file denies every public push. `coldrelease publish` and
 `coldrelease ship` push the release commit themselves; the guard does not treat them
 as pushes. Private pushes require verified PRIVATE visibility.
 Public pushes with `push.followTags` enabled are denied. Guard errors deny tool calls.
+
+### Create the approved public release tag
+
+From the Coldrelease checkout, use the literal 40-hex commit from `approval.json`:
+
+```sh
+git push --force-with-lease=refs/tags/<T>: <remote> <release_head>:refs/tags/<T>
+```
+
+The approval must name the bare tag `<T>`, the exact push URL, and
+`refs/heads/main`. The guard verifies the linked PASS receipt, checks that
+public HEAD and main both point to `release_head`, and checks that the tag
+is absent. The empty lease protects tag creation if another push races it.
+The guard records tag use separately from the main push, so each can run once.
 
 ### Recover the ColdVerify v0.2.0 tag
 
@@ -383,7 +397,9 @@ they need their own reviewed shape that runs the secret scan on each file first.
 An owner yes does not cover `gh release`.
 Unsupported executable expansions and shell scripts on stdin are denied. Script
 files are outside this conservative command guard's coverage.
-Direct `gh api` requests with bodies or methods other than GET and HEAD are denied.
+The guard denies direct `gh api` writes by default. It allows a standalone `gh api -X POST repos/TayHCode/<name>/transfer -f new_owner=coldstack-dev` on github.com.
+It also accepts `--method POST`, the field flags `--raw-field`, `-F` and `--field`, and an optional trailing field `new_name=<name>` matching the source exactly.
+The other allowed write is a standalone `gh api -X PUT repos/<owner>/<repo>/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors` for `TayHCode` or `coldstack-dev`, with `GH_HOST` unset or set to `github.com`. It accepts `--method PUT` and the same field flags.
 Pushes that can recursively publish submodules are denied for both private and public parents.
 Stop remains covered by the keep-going hook.
 
@@ -419,8 +435,14 @@ separately, add `--hook-run 'CLIENT:EVENT[,EVENT]=COMMAND'` (repeatable;
 CLIENT is `claude` or `codex`). Each command gets the event JSON on stdin and
 runs only on its listed events. Its `additionalContext` (or plain stdout) is
 appended, and a `deny` from it blocks the tool call. A failing command is skipped.
-Claude Code inlines at most 10,000 characters of one hook's context and hides the
-rest behind a file preview. In Claude hooks (detected by `CLAUDE_PROJECT_DIR`), when the merged context is over that limit, Coldlocker's own
+`SessionStart` sends up to 4,000 UTF-8 bytes of combined context in Claude and
+Codex. Whole paragraphs of Coldlocker's briefing and whole chained responses
+that fit stay inline. The rest go to one owner-only file under
+`~/.cache/coldlocker/hook-output/`. Its pointer counts toward the limit.
+If the hook cannot write the file, it gives a short notice and keeps the byte cap.
+
+For other events, Claude Code inlines at most 10,000 characters of one hook's
+context and hides the rest behind a file preview. When context exceeds that limit in Claude, Coldlocker's own
 briefing and lessons stay inline with the chained outputs that fit, and the rest are saved
 together to one owner-only file under `~/.cache/coldlocker/hook-output/` behind a
 one-line pointer. If that file cannot be written, or Coldlocker's own context leaves no room
@@ -676,6 +698,13 @@ for the hook; a busy lock drops that log entry. The verdict is printed and flush
 calls, denials by guard, denial rates and the ten most common reasons, with quoted
 tokens replaced by `…`. Missing logs print `no decisions recorded` and exit 0.
 
+The hook appends a row to `~/.local/state/coldlocker/session-start.jsonl` after
+each `SessionStart` response, including starts with zero context.
+`inline_bytes` counts the UTF-8 bytes sent as `additionalContext`.
+`total_bytes` counts the combined context before the final byte cap.
+Rows contain UTC time, client and a hashed session ID when available. The
+log uses the same permissions and rotation rules as the decision log.
+
 ## Scoped transcript advice and startup budget
 
 SessionStart and SubagentStart filter the shared lesson briefing using each
@@ -697,10 +726,7 @@ If lesson metadata cannot be read within its shared allowance, the hook names
 the omission and excludes entries whose scope and verification are unknown.
 
 The hook reserves briefing, file references and checkout notices before fitting
-lessons into the remaining 9,600-character startup allowance. The existing
-8,000-character lesson allowance still applies first. Lesson cuts include a
-file pointer to a cached filtered copy when it fits; if no room remains, lessons
-are omitted. Cache failures preserve startup policy. Briefing
-and chained policy text are preserved in full even when they exceed the inline
-ceiling. Chained hooks keep their existing independent spill behavior. No live hook or
-lesson configuration is changed by installing this code in a review worktree.
+lessons into the 9,600-character allowance for its own context. The
+8,000-character lesson allowance applies first. Lesson cuts include a pointer
+to a cached filtered copy when it fits. The final `SessionStart` byte cap
+applies after the hook combines this context with chained responses.

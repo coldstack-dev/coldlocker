@@ -487,8 +487,8 @@ def import_item(args, root=ROOT):
     entry = import_preflight(value, collection, item_name, destination, relative, owner, origin, kind)
     validators.require(entry is not None or not getattr(args, "require_existing", False),
                        "scan update requires an existing catalog entry")
-    validators.require(entry is None or not getattr(args, "create_only", False),
-                       f"{collection} {item_name} already exists in the catalog")
+    if entry is not None and getattr(args, "create_only", False):
+        raise Refused(f"REFUSED: {collection} {item_name} already exists in the catalog")
     if prompt:
         target = destination.parent / prompt.name
         ordinary_file(target)
@@ -1372,12 +1372,18 @@ def model_route(args):
     if args.role not in routes and args.role not in REVIEW_ROLES:
         return incomplete("unknown role: " + args.role)
     route = routes.get(args.role)
+    review_providers = None
     if args.builder_model or (args.role in REVIEW_ROLES
                               and (args.model_action == "target" or args.role == SONNET_REVIEW_ROLE)):
         if args.role not in REVIEW_ROLES:
             return incomplete("--builder-model applies only to review roles: " + ", ".join(REVIEW_ROLES))
         if not args.builder_model:
             return incomplete("review targets require --builder-model")
+        for builder in args.builder_model:
+            neon_builder = canonical_model(builder) == "gemini-4-neon"
+            if (neon_builder or builder.startswith("antigravity/")) and builder not in (
+                    "gemini-4-neon", "antigravity/gemini-4-neon"):
+                return incomplete("unsupported Antigravity builder: " + builder)
         builders = {canonical_model(b) for b in args.builder_model}
         def independent(model):
             model = canonical_model(model)
@@ -1390,19 +1396,25 @@ def model_route(args):
                     families.add("claude")
                 elif re.fullmatch(r"(?:gpt-(?:[0-9]+-)*|gpt-)?(?:astra|sol|terra|luna)(?:-.*)?", builder):
                     families.add("codex")
+                elif builder == "gemini-4-neon":
+                    families.add("antigravity")
                 else:
                     return incomplete("no independent reviewer for unrecognized builder: " + builder)
             if len(families) > 1:
-                return incomplete("no independent reviewer for mixed Claude and Codex builders")
+                return incomplete("no independent reviewer for mixed builder families")
+            review_providers = {"codex", "antigravity"} if families == {"claude"} else {"claudeAgent"}
             if args.role == SONNET_REVIEW_ROLE:
                 if "codex" not in families:
                     return incomplete("no independent reviewer for " + args.role + " without a Codex builder")
             elif families:
-                candidates = ("reviewer-for-codex",) if "codex" in families else ("reviewer",)
+                candidates = ("reviewer-for-codex",) if "claude" not in families else ("reviewer",)
         route = next((routes[role] for role in candidates
-                      if role in routes and independent(routes[role]["model"])), None)
+                      if role in routes and independent(routes[role]["model"])
+                      and (review_providers is None or routes[role]["provider"] in review_providers)), None)
     if route is None:
         return incomplete("no independent reviewer for " + args.role if args.builder_model else "unknown role: " + args.role)
+    if route["provider"] == "antigravity" and route["model"] != "gemini-4-neon":
+        return incomplete("unsupported Antigravity model: " + route["model"])
     if args.model_action == "get":
         print(json.dumps(route))
         return 0
