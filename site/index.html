@@ -37,18 +37,18 @@
         <p class="eyebrow">GET STARTED</p><h2 id="download-title">Your computer. Your library.</h2><p class="intro">Give this prompt to your coding agent (Claude Code, Codex, Cursor, or any agent that can run terminal commands). It clones coldlocker, checks the install, and walks you through the setup. No app subscription is required.</p>
         <div class="install-label"><span>Prompt for your agent</span><button class="text-link" data-copy="agent-prompt">Copy prompt</button></div>
         <pre id="agent-prompt"><code>Set up coldlocker on this computer.
-1. Run: git clone https://github.com/TayHCode/coldlocker ~/coldlocker
+1. Run: git clone https://github.com/coldstack-dev/coldlocker ~/coldlocker
 2. From that folder run: python3 hub.py doctor (use py -3 on Windows; Python 3.11+ (Windows: 3.12.4+) and Git are required). Stop and tell me if it fails.
 3. Read AGENTS.md and docs/IMPORT-PROMPT.md, then follow them to scan my existing skills, rules and MCP servers. Show me what you found and wait for my approval before importing anything.
 4. Never print or ask me to paste secret values.</code></pre>
         <div class="install-label"><span>Or run the commands yourself</span><button class="text-link" data-copy="install-commands">Copy commands</button></div>
-        <pre id="install-commands"><code>git clone https://github.com/TayHCode/coldlocker
+        <pre id="install-commands"><code>git clone https://github.com/coldstack-dev/coldlocker
 cd coldlocker
 python3 hub.py doctor
 python3 hub.py serve</code></pre>
         <p class="fine">Open the local address printed in your terminal. On Windows, use <code>py -3</code> instead of <code>python3</code> (Python 3.12.4+). The wizard scans locally; this website cannot read your files.</p>
         <details><summary>Want hosted bots to use your library too?</summary><p>Deploy the included catalog Worker on your Cloudflare account, publish your selected library, then connect the bot to your endpoint. Each deployment serves one owner's library. Your Cloudflare usage and domain are your responsibility.</p><p>The package includes the full guide at <code>docs/self-host.md</code> and deployment instructions at <code>docs/remote.md</code>.</p></details>
-        <p class="fine" id="source-repository"><a href="https://github.com/TayHCode/coldlocker">Source repository on GitHub</a> · Source, self-hosting and contributions.</p>
+        <p class="fine" id="source-repository"><a href="https://github.com/coldstack-dev/coldlocker">Source repository on GitHub</a> · Source, self-hosting and contributions.</p>
         <details><summary>No Git? Download a package and verify it</summary><p><span id="release-detail">Source package with the setup wizard, CLI, and optional hosted catalog.</span><br>Download: <a href="/downloads/coldlocker.zip" download>ZIP</a> or <a href="/downloads/coldlocker.tar.gz" download>tar.gz</a>. <a href="/downloads/SHA256SUMS.txt">Download checksums</a> · <a href="/downloads/release.json">Source manifest</a>. The source package contains no Git history, credentials, or imported library. Review imported instructions before running them.</p></details>
       </section>
       <section id="connect" class="section" aria-labelledby="connect-title">

@@ -32,7 +32,7 @@ def blocks(language):
             for block in re.findall(r'^   ```' + language + r'\n(.*?)^   ```', quickstart(), re.M | re.S)]
 
 
-CLONE = 'git clone https://github.com/TayHCode/coldlocker'
+CLONE = 'git clone https://github.com/coldstack-dev/coldlocker'
 SHELL_LINES = {CLONE, 'cd coldlocker', 'claude mcp list'}
 
 
@@ -65,7 +65,7 @@ class ReadmeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         core, pack = result.stdout.split('core commands:\n', 1)[1].split('policy pack commands')
         listed = lambda text: re.findall(r'^  (\S+)', text, re.M)
-        self.assertEqual(listed(pack), ['sync-lessons', 'deliver-rules', 'model', 'guard-stats'])
+        self.assertEqual(listed(pack), ['sync-lessons', 'deliver-rules', 'model', 'guard-stats', 'guard-audit'])
         self.assertIn('scan', listed(core))
         self.assertIn('update', listed(core))
         self.assertFalse(set(listed(core)) & set(listed(pack)))
@@ -77,6 +77,24 @@ class ReadmeTests(unittest.TestCase):
         readme = (ROOT / 'README.md').read_text(encoding='utf-8')
         self.assertLessEqual(len(readme.splitlines()), 120)
         self.assertNotRegex(readme, r'\bcold (model|verify|review)\b')
+
+    def test_readme_onboarding_privacy_and_scan_accuracy(self):
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        self.assertIn('No telemetry', readme)
+        for disclosure in ('git clone', 'hub.py update', 'import-skill', 'pack install',
+                           'gateway.py install', 'OAuth discovery', 'Sign-in step', 'mcp-run',
+                           'publish-remote', 'Cloudflare', 'connect-composio', 'agents-*',
+                           'gh', 'git ls-remote', 'ssh'):
+            with self.subTest(disclosure=disclosure):
+                self.assertIn(disclosure, readme)
+        self.assertIn('crontab -l', readme)
+        self.assertNotIn('only `PASS` lines', readme)
+        self.assertRegex(readme, r'`PASS` or `SKIP`.*no `FAIL`')
+        self.assertRegex(readme, r'```text\n   claude:[^\n]+\n     sc-[0-9a-f]+ [^\n]+\n     sc-[0-9a-f]+ [^\n]+\n   ```')
+        legacy = 'tay' + 'hcode'
+        for relative in ('README.md', 'docs/install.md', 'docs/hooks.md', 'site/index.html', 'tools/build_site.py'):
+            with self.subTest(file=relative):
+                self.assertNotIn(legacy, (ROOT / relative).read_text(encoding='utf-8').lower())
 
     def test_docs_state_one_python_floor(self):
         for path in [ROOT / 'README.md', *sorted((ROOT / 'docs').glob('*.md'))]:

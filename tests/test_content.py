@@ -197,9 +197,52 @@ class ContentTests(unittest.TestCase):
 
     def test_agent_entrypoint_mentions_required_interfaces(self):
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        for required in ("VISION.md", "docs/formats.md", "manifest.json", "skills/<name>/SKILL.md", "rules/", "hub_list_*", "mcp_endpoint.py", "secret://", "hub.py link", "hub.py check", "enabled=false", "docs/hosted-bot-bootstrap.md"):
+        lines = text.splitlines()
+        self.assertGreaterEqual(len(lines), 15)
+        self.assertLessEqual(len(lines), 25)
+        for required in (
+            "https://github.com/coldstack-dev/coldlocker",
+            "hub.py doctor --json",
+            "failed_checks",
+            "expired_oauth",
+            "oauth_expiry_details_available",
+            "hub.py guard-audit --json",
+            "hub.py scan --json",
+            "plain `hub.py scan` exits `0`",
+            "hub.py check",
+            "crontab -l",
+            "docs/IMPORT-PROMPT.md",
+            "Exit codes",
+            "`0`",
+            "`1`",
+            "`2`",
+            "Approval gate",
+            "scan --import",
+            "pack add|remove|install|uninstall",
+            "connect --write",
+            "disconnect --apply",
+            "connect-composio",
+            "agents-import|export|sync",
+            "gateway.py install|prepare|start|stop|refresh|sync|token",
+            "gateway.py register-executor --apply",
+            "store.py set|delete",
+            "--apply",
+            "--yes",
+            "--write",
+            "secret://",
+            "MAINTAINING.md",
+        ):
             with self.subTest(required=required):
                 self.assertIn(required, text)
+        if (ROOT / "config" / "public-export-review.json").is_file():
+            self.assertTrue((ROOT / "MAINTAINING.md").is_file(), "MAINTAINING.md is required in private checkouts")
+            claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+            self.assertIn("@AGENTS.md", claude)
+            self.assertIn("MAINTAINING.md", claude)
+            maintaining = (ROOT / "MAINTAINING.md").read_text(encoding="utf-8")
+            for required in ("VISION.md", "docs/formats.md", "manifest.json", "skills/<name>/SKILL.md", "rules/", "hub_list_*", "mcp_endpoint.py", "secret://", "hub.py link", "hub.py check", "enabled=false", "docs/hosted-bot-bootstrap.md"):
+                with self.subTest(maintaining=required):
+                    self.assertIn(required, maintaining)
 
     def test_readme_mentions_setup_interfaces(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")

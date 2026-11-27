@@ -149,6 +149,22 @@ class PublicExportTests(unittest.TestCase):
         selected = [line.strip() for line in (ROOT / 'public-export.txt').read_text().splitlines() if line.strip()]
         self.assertEqual(unexported_pack_paths(selected), [])
 
+    def test_exported_files_have_no_legacy_owner_handle_and_exclude_maintaining_doc(self):
+        selected = [line.strip() for line in (ROOT / 'public-export.txt').read_text(encoding='utf-8').splitlines()
+                    if line.strip() and not line.lstrip().startswith('#')]
+        self.assertIn('AGENTS.md', selected)
+        self.assertNotIn('MAINTAINING.md', selected)
+        legacy = 'tay' + 'hcode'
+        for name in selected:
+            path = ROOT / name
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            if b'\x00' in data:
+                continue
+            with self.subTest(path=name):
+                self.assertNotIn(legacy, data.decode('utf-8', errors='replace').lower())
+
     def test_only_the_49_listed_pack_licenses_pass_the_pack_guard(self):
         self.assertEqual(len(set(EXPORTED_PACK_LICENSES)), 49)
         for name in EXPORTED_PACK_LICENSES:

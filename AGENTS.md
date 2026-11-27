@@ -1,38 +1,24 @@
-# Coldlocker agent instructions
+# Coldlocker — Agent Guide
 
-When the optional policy pack is installed, read [the model routing rule](rules/model-routing.md)
-before starting work, including its configurable role defaults and subagent
-restrictions, and follow the owner rules it names.
-Do not change live routing to implement the builder proposal.
+1. **Install:** `git clone https://github.com/coldstack-dev/coldlocker && cd coldlocker` (Python 3.11+; Windows: 3.12.4+ with `py -3`).
+2. **Verify (read-only):** `python3 hub.py doctor --json` (check `exit_code: 0`, `failed_checks: []`, `expired_oauth: []`, `oauth_expiry_details_available: true`; plain `doctor` prints `PASS`/`SKIP`, no `FAIL`) and, when hooks are installed, `python3 hub.py guard-audit --json` (`status`: `PASS`/`FAIL`/`INCOMPLETE`).
+3. **First read-only command:** `python3 hub.py scan --json` (reads local agent configs and `crontab -l`, writes nothing; exits `0` clean, `1` review/conflict findings, `2` incomplete; plain `hub.py scan` exits `0` even with findings) and `python3 hub.py check` for repo checks. Use [docs/IMPORT-PROMPT.md](docs/IMPORT-PROMPT.md) for guided setup.
 
-Use README.md for project context and VISION.md when the developer checkout
-includes it. Catalog entries live in manifest.json: skills use
-skills/<name>/SKILL.md and rules use rules/. Read docs/formats.md before changing
-entry formats. The hub_list_* tools discover entries through mcp_endpoint.py;
-load relevant entries before applying them.
+## Exit codes
 
-Follow [the import prompt](docs/IMPORT-PROMPT.md) for inventory and approved
-imports. Keep credentials in the private store behind secret:// references.
-Keep imported routines enabled=false with one owner and one runner. Use
-`python3 hub.py link` for approved links and `python3 hub.py check` to validate.
-See docs/hosted-bot-bootstrap.md for hosted bot setup; catalog discovery alone
-does not prove activation or authentication.
+| Code | Meaning |
+| --- | --- |
+| `0` | Success / `PASS` (note: plain `scan` also exits `0` when reporting findings) |
+| `1` | Findings (`scan --json`), failed checks/expired OAuth (`doctor`), drift (`guard-audit`), or refusal |
+| `2` | Incomplete check (`INCOMPLETE` / `incomplete_inventory`), unavailable diagnostics, or invalid arguments |
 
-`python3 tools/context_budget.py` measures what Coldlocker injects (hook
-context per client and the MCP tool list) against `context-budget.json`; CI
-runs the same command. After a change to injected text, run it with `--write`
-and commit the baseline. Growth needs the `agent-context-increase` PR label.
-Hook context is capped at 10,000 characters, because Claude Code spills larger
-hook output to a file. Tool descriptions are capped at 4,096 characters, where
-Claude Code cuts them off. The same command runs the real hook with 8,000
-characters of lessons (the hook's lesson allowance) and fails when session or
-subagent start would exceed 9,600 characters, which leaves room for the
-chained-output pointer. With `COLDLOCKER_LESSONS` set it also fails when the hook
-would cut those lessons or cannot read them.
+## Approval gate (mandatory)
 
-In a private maintainer checkout containing `tools/guard_replay.py`, run `python3 tools/guard_replay.py` to replay the scrubbed corpus.
-Denials may only decrease; a rise needs a fix, never a higher baseline. Public exports omit this maintainer check.
-
-Inside an agent sandbox `hub.py check` is the gate. If sandbox restrictions
-prevent localhost sockets, ps or crontab, run the full unittest suite outside
-the sandbox and report the restriction and the checks actually executed.
+Never run any mutating command or flag without explicit user approval:
+- `scan --import`, `import-*`, `import-executor --apply`, `remove`, `pack add|remove|install|uninstall`
+- `connect --write`, `disconnect --apply`, `connect-composio` (local `--name`/`--url` or `--catalog --write`), `link` (without `--dry-run`), `routine enable|disable --write`
+- `publish-remote` (without `--dry-run`), `agents-import|export|sync`, `update`, `sync-lessons`, `deliver-rules` (without `--dry-run`)
+- `gateway.py install|prepare|start|stop|refresh|sync|token`, `gateway.py register-executor --apply`, `store.py set|delete`, `hooks/install.py --write`
+- Never pass `--apply`, `--yes`, `--write`, or `--approve-risky` without the user's explicit go-ahead.
+- Never read, print, or ask the user to paste secret values; use `secret://<name>` references only.
+- If `MAINTAINING.md` exists in this checkout, read it before starting work.

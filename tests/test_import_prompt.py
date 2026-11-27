@@ -69,9 +69,11 @@ class ImportPromptTests(unittest.TestCase):
         normalized = re.sub(r'\s+', ' ', self.block)
         self.assertIn(sentence, normalized)
         self.assertGreater(normalized.index(sentence), normalized.index('5. Report'))
-        agents = re.sub(r'\s+', ' ', (ROOT / 'AGENTS.md').read_text(encoding='utf-8'))
-        self.assertIn('Inside an agent sandbox `hub.py check` is the gate', agents)
-        self.assertIn('outside the sandbox', agents)
+        if (ROOT / 'config' / 'public-export-review.json').is_file():
+            self.assertTrue((ROOT / 'MAINTAINING.md').is_file(), 'MAINTAINING.md is required in private checkouts')
+            maintaining = re.sub(r'\s+', ' ', (ROOT / 'MAINTAINING.md').read_text(encoding='utf-8'))
+            self.assertIn('Inside an agent sandbox `hub.py check` is the gate', maintaining)
+            self.assertIn('outside the sandbox', maintaining)
 
     def test_codex_run_notes_are_documented(self):
         self.assertIn('## Running under Codex\n', self.document)

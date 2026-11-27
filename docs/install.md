@@ -11,7 +11,7 @@ For one library reachable from local agents and hosted bots, follow the
 
 Install Git and Python 3.11+ (Windows: 3.12.4+). Clone into a permanent folder:
 connected agents remember its path, so moving it breaks them. The public source is
-`git clone https://github.com/TayHCode/coldlocker`, then `cd coldlocker`.
+`git clone https://github.com/coldstack-dev/coldlocker`, then `cd coldlocker`.
 For another approved repository, run `gh repo clone <OWNER>/coldlocker` (or
 `git clone <HTTPS_URL> coldlocker`) with your existing GitHub login. Replace
 `<OWNER>` and `<HTTPS_URL>` with that repository; an SSH URL needs an SSH key.
@@ -33,7 +33,7 @@ Do not use development recovery bundles as public installation packages.
 python3 hub.py doctor
 ```
 
-Every line should start with `PASS` and the command should exit 0. To update an
+Every line should start with `PASS` or `SKIP` (no `FAIL`) and the command should exit 0. To update an
 existing installation later, follow the [upgrade guide](upgrade.md).
 
 For additional source-export checks, run `python3 -B tools/verify_export.py`.

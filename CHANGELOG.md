@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `hub.py guard-audit [--json]` compares Claude Code and Codex hook files with Coldlocker's install receipts and reports `PASS`, `FAIL` or `INCOMPLETE` with each added, missing or changed hook, changed setting and missing or invalid receipt. Receipts now record a hook and setting snapshot. The owner guard denies agent writes to the user-level `~/.claude/settings*.json`, `~/.codex/hooks.json`, `~/.codex/config.toml` and `~/.cursor/hooks.json` (or `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME`) and to Coldlocker receipts; project settings stay editable.
+
 - Custom modes: `~/.coldlocker/modes.json` maps a mode name to `reminders` and `keep_going`, and a `<mode>:` prompt prefix turns that mode on for the session; `work:` leaves it. A mode cannot change a guard: any other key makes the file invalid and no mode applies. `guards.json` always wins over a mode.
 
 - `chat:` no longer turns off the publication and dispatch guards or chained PreToolUse commands; it only silences injected context and keep-going (#194).

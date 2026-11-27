@@ -4,7 +4,7 @@ Run `python3 hub.py` from the repository root. Python 3.11+ and the standard lib
 
 Core commands: `scan`, `connect`, `disconnect`, `mcp-run`, `connect-composio`, `list`, `remove`, `pack`, `import-skill`, `import-rule`, `import-subagent`, `import-command`, `import-mcp`, `import-routine`, `import-plugin`, `import-connection`, `import-executor`, `link`, `routine`, `publish-remote`, `agents-import`, `agents-export`, `agents-sync`, `serve`, `check`, `doctor`, `update`.
 
-[Policy pack commands](#policy-pack-commands): `sync-lessons`, `deliver-rules`, `model`, `guard-stats`.
+[Policy pack commands](#policy-pack-commands): `sync-lessons`, `deliver-rules`, `model`, `guard-stats`, `guard-audit`.
 
 On Windows, `python3` may be a Store stub; use `python` or `py -3`. File locks use `msvcrt`. The private store is owner-only on Windows only when Python 3.12.4+ creates it (`mkdir` mode `0o700` sets a protected ACL for SYSTEM, Administrators and the owner); older Pythons leave the parent folder's permissions, so use 3.12.4+. Starting the gateway on Windows is covered in [gateway.md](gateway.md).
 
@@ -284,9 +284,21 @@ success it prints the rollback command.
 
 ## Policy pack commands
 
-`sync-lessons`, `deliver-rules`, `model` and `guard-stats` belong to the
+`sync-lessons`, `deliver-rules`, `model`, `guard-stats` and `guard-audit` belong to the
 optional owner policy pack ([core and policy split](core-vs-policy.md)). Nothing
 in the install, scan, import, connect, use and update journey needs them.
+
+### Audit installed hooks for tampering
+
+```sh
+python3 hub.py guard-audit
+python3 hub.py guard-audit --json
+```
+
+Compares the Claude Code and Codex hook files with the receipts that
+`hooks/install.py` wrote and names each added, missing or changed hook, changed
+setting and missing or invalid receipt. It prints `PASS`, `FAIL` or `INCOMPLETE`
+and exits 0, 1 or 2. See [hook tamper and drift audit](hooks.md#hook-tamper-and-drift-audit).
 
 ### Serve proven lessons to every client
 

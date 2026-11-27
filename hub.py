@@ -1267,6 +1267,24 @@ def post_update_checks(had_pack):
     return hook_self_test(ROOT) and installation.returncode == 0
 
 
+def guard_audit(args):
+    if (ROOT / "hooks" / "install.py").is_file():
+        from hooks.install import audit, targets
+        report = audit(targets(None))
+    else:
+        report = {"status": "INCOMPLETE", "clients": [], "error": "policy pack not installed"}
+    code = {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[report["status"]]
+    if args.json:
+        print_json({"exit_code": code, **report})
+        return code
+    for client in report["clients"]:
+        print(f"{client['status']}: {client['client']} {client['settings']}")
+        for finding in client["findings"]:
+            print(f"  {finding['kind']}: {finding['detail']}")
+    print(report["status"] + (f": {report['error']}" if "error" in report else ""))
+    return code
+
+
 def guard_stats(args):
     if args.days < 1:
         raise ValueError("--days must be positive")
@@ -1431,7 +1449,7 @@ def incomplete(reason):
     return 1
 
 
-POLICY_PACK_COMMANDS = ("sync-lessons", "deliver-rules", "model", "guard-stats")
+POLICY_PACK_COMMANDS = ("sync-lessons", "deliver-rules", "model", "guard-stats", "guard-audit")
 
 
 def parser():
@@ -1530,6 +1548,9 @@ def parser():
     stats = commands.add_parser("guard-stats", help="Summarize local hook decisions by day and guard.")
     stats.add_argument("--days", type=int, default=7)
     stats.set_defaults(action=guard_stats)
+    command = commands.add_parser("guard-audit", help="Compare client hook settings with Coldlocker's install receipts. Exit 1 on drift or tampering.")
+    command.add_argument("--json", action="store_true", help="Report PASS, FAIL or INCOMPLETE and every finding as JSON.")
+    command.set_defaults(action=guard_audit)
     commands.add_parser("update", help="Fast-forward main from origin, then run installation checks and a hook self-test. Roll back if either fails.").set_defaults(
         action=update)
     for title, in_pack in (("core commands", False),
@@ -1543,7 +1564,7 @@ def parser():
 def main():
     argv = sys.argv[1:]
     option_args = argv[:argv.index("--")] if "--" in argv else argv
-    supports_json = argv and (argv[0] in ("doctor", "list", "scan", "connect") or argv[:2] == ["pack", "install"])
+    supports_json = argv and (argv[0] in ("doctor", "list", "scan", "connect", "guard-audit") or argv[:2] == ["pack", "install"])
     as_json = supports_json and any(
         "--json".startswith(option.partition("=")[0]) for option in option_args[1:] if option.startswith("--")
     )

@@ -397,9 +397,7 @@ they need their own reviewed shape that runs the secret scan on each file first.
 An owner yes does not cover `gh release`.
 Unsupported executable expansions and shell scripts on stdin are denied. Script
 files are outside this conservative command guard's coverage.
-The guard denies direct `gh api` writes by default. It allows a standalone `gh api -X POST repos/TayHCode/<name>/transfer -f new_owner=coldstack-dev` on github.com.
-It also accepts `--method POST`, the field flags `--raw-field`, `-F` and `--field`, and an optional trailing field `new_name=<name>` matching the source exactly.
-The other allowed write is a standalone `gh api -X PUT repos/<owner>/<repo>/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors` for `TayHCode` or `coldstack-dev`, with `GH_HOST` unset or set to `github.com`. It accepts `--method PUT` and the same field flags.
+The guard denies direct `gh api` writes by default, allowing only narrow reviewed shapes configured in `hooks/publication_guard.py`.
 Pushes that can recursively publish submodules are denied for both private and public parents.
 Stop remains covered by the keep-going hook.
 
@@ -681,6 +679,63 @@ unrelated hooks. To remove retired handlers from every event, preview
 `python3 hooks/install.py --remove-command '<EXACT_OLD_COMMAND>'`, then add
 `--write`. Repeat `--remove-command` for multiple commands. Removal matches the
 whole command, uses backups and atomic writes, and preserves other handlers.
+
+### Hook tamper and drift audit
+
+Each receipt records the SHA-256 of the client file it wrote, every hook handler
+in that file (event, matcher and handler) and a SHA-256 per other top-level
+setting such as `permissions`, `env` or `disableAllHooks`. Values are not copied.
+`python3 hub.py guard-audit` compares `~/.claude/settings.json` and
+`~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) with their receipts and
+prints `PASS`, `FAIL` or `INCOMPLETE` per client and overall; `--json` writes the
+same report as one object. It exits 0 on `PASS`, 1 on `FAIL` and 2 on `INCOMPLETE`.
+It never writes.
+
+Whenever the installer writes a client file it also refreshes the file's other
+valid receipts, keeping their owned commands, so every receipt records the same
+state. A legacy `.fleet-receipt.json` beside a new Coldlocker receipt is
+refreshed to own the migrated `coldlocker_hook.py` command, which also
+finishes a legacy install that was interrupted. The audit checks every receipt. When the file no longer matches one
+receipt's SHA-256, it reports `settings-drift` and names each difference against
+that receipt's snapshot:
+
+- `hook-added`: a handler Coldlocker did not record, such as a startup or
+  PreToolUse hook a plugin or agent added.
+- `hook-missing`: a recorded Coldlocker-owned handler is gone or changed.
+  `hook-modified` shows its changed form (timeout, matcher or `async`); a
+  changed command shows as `hook-missing` plus `hook-added`.
+- `hook-removed`: another recorded handler, including the keep-going Stop hook, removed.
+- `setting-changed`: a top-level setting added, removed or changed.
+
+Every receipt's owned commands must also be in the file. A rollback to an older
+install therefore fails whatever the receipts' timestamps, with `hook-missing`
+for any owned command it drops. It also fails on
+`receipt-invalid` (an unreadable, symlinked or malformed receipt, including a
+malformed snapshot entry or digest) and `receipt-missing` (a `coldlocker_hook.py` command
+without a Coldlocker receipt, or a `fleet_hook.py` command without either
+receipt). A receipt written before snapshots existed
+reports `no-snapshot` and only checks that owned commands are present; reinstall
+to record one. A client
+without receipts reports `not-installed` and an unfinished install reports
+`install-pending`; both are `INCOMPLETE`. After a change you made on purpose,
+rerun the same `hooks/install.py ... --write` command to record the new state.
+Receipts are not signed: the owner guard below stops agents from rewriting them,
+and the audit catches anything else that edits settings without the installer.
+
+The owner guard denies agent writes, moves and deletes of user hook settings
+and receipts: `settings.json` and `settings.local.json` in `~/.claude` or
+`$CLAUDE_CONFIG_DIR`, `hooks.json` and `config.toml` (which holds Codex hook
+trust) in `~/.codex` or `$CODEX_HOME`, `~/.cursor/hooks.json`, and any
+`*.coldlocker-receipt.json`, `*.recall-receipt.json` or `*.fleet-receipt.json`.
+It also denies moving, deleting or replacing `~/.claude`, `~/.codex`,
+`~/.cursor`, `$CLAUDE_CONFIG_DIR`, `$CODEX_HOME` or a folder that holds one,
+as written, through each symlink hop (resolved left to right, so `..`
+applies after the symlink before it) or fully resolved, so
+`rm -rf ~/.claude` cannot take settings and receipts together. Agents can still
+read them and write other files inside those folders. The owner edits them by
+hand or runs the installer.
+A project's own `.claude`, `.codex` and `.cursor` settings stay editable; they
+are part of the repository and go through review.
 
 ## Decision log
 

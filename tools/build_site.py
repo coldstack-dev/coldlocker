@@ -122,7 +122,7 @@ def security_page(template, contact):
         '</a>. Forwarding is configured to the maintainer. Please allow time for a response.')
 
 
-DEFAULT_REPOSITORY = 'https://github.com/TayHCode/coldlocker'
+DEFAULT_REPOSITORY = 'https://github.com/coldstack-dev/coldlocker'
 
 
 def repository_page(template, url):
