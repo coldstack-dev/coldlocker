@@ -16,7 +16,7 @@ policy where those skills name a missing rule.
 
 ## Credentials boundary
 
-The owner, publication and dispatch guards are best-effort command filters.
+The owner, publication, dispatch and secret-read guards are best-effort command filters.
 They run before a tool call under the agent's local user. The host, provider or
 service authorizes the identity that actually makes the request, including
 requests made through MCP, CI or a client without hooks.
@@ -505,6 +505,73 @@ seconds, the call is allowed and that session's count is dropped. It refuses a
 loop folder that resolves into, or contains, `~/.coldlocker` or Coldlocker's
 state folder, ignores records older than a day and keeps at most 512 files. It
 does nothing on systems without POSIX user IDs and `fcntl` locking.
+
+### Secret-read guard
+
+The Coldlocker hook denies tool calls that would expose live secrets into the
+agent's context. It is always on, in every mode, and `guards.json` cannot switch
+it off. Denials start with `Secret-read guard:` and name the command or path,
+never a value. They are logged with guard `secrets` and rule `secret-read`.
+
+- Real env files: `.env`, `.envrc` and `.env.<name>` (`.env.local`,
+  `.env.production` and so on). It checks the Read tool, the Grep tool's `path`
+  and a `glob` such as `.env*`, `<` redirects, and file operands of readers
+  such as `cat`, `head`, `less`, `grep`, `rg`, `awk`, `sed` (except `sed -i`),
+  `diff` and `base64`. Sourcing one with `source` or `.` counts too. A symlink
+  to an env file counts, resolved after any `cd` in the same command. Windows
+  backslash paths (`C:\app\.env`) count the same as `/` paths, and a program
+  named by a path or with `.exe` (`C:\Tools\timeout.exe`) counts as its bare
+  name. A backslash-newline outside single quotes joins the lines, as in Bash
+  (`ca\` then `t .env` is `cat .env`). A shell
+  glob counts only when it matches an env file on disk. A Grep `glob` counts
+  when any brace branch can name an env file (`.env*`, `*.env.production.local`,
+  `.en?`) and is not only an example file (`*.env.example`); `*` and `.*` stay
+  allowed. Quoted or escaped `>`, `<`, `|` and `;` are plain words, not
+  redirects or separators.
+- `python -c` code (any `python`, `python3` or `pypy` version) that opens or
+  loads an env file (`open('.env')`, `Path('.env.local')`, `dotenv_values()`,
+  `load_dotenv()` with no file), reads `os.environ` other than one non-secret
+  key (`os.environ['PATH']`, `os.environ.get('HOME')`), or calls `getenv` with
+  a secret-looking name.
+- Environment dumps: `printenv` with no names, `env` with only options and
+  assignments (`env FOO=bar`, `env -- FOO=bar`, `env -S 'FOO=bar'`), `export`,
+  `declare` or `typeset` with no names and any flags other than `-f` or `-F`
+  (`export -p`, `declare -x`, `declare -ix`, `typeset -p`), bare `set`, and any
+  `/proc/<pid>/environ` path.
+- Secret-looking names (a `KEY`, `API_KEY`, `TOKEN`, `SECRET`, `PASSWORD`,
+  `PASSWD`, `CREDENTIAL` or `CREDENTIALS` part, such as `GH_TOKEN` or
+  `ANTHROPIC_API_KEY`) in `printenv NAME`, `declare -p NAME`, or `echo` and
+  `printf` that show `$NAME` on the terminal or pipe it to a reader.
+
+It allows `.env.example`, `.env.sample`, `.env.template`, `.env.dist` and
+`.env.schema` (also as an inner part, as in `.env.local.example`), and a `.env`
+folder such as a virtualenv. It also allows writing, copying,
+testing or listing `.env` (`cp .env.example .env`, `echo X=1 >> .env`,
+`ls .env*`), sourcing an example file or a `.env` virtualenv's `bin/activate`, `env VAR=val cmd`, `env -i`, `env --version`,
+`printenv PATH` and other non-secret names, `${NAME:+set}` and `${#NAME}`, and
+`$NAME` sent to a file or another program (`echo "$GH_TOKEN" | gh auth login
+--with-token`, `curl -H "Authorization: Bearer $GH_TOKEN"`). Only a stdout
+redirect (`>`, `1>`, `>>`, `&>`) to a file counts as sending it away; `2>/dev/null`,
+`>&2` and `1>&2` still show it. Redirects apply left to right, so
+`>/dev/null >&2` shows it again, and `bash -c` or `eval` keeps the outer
+command's stdout and stderr (`bash -c 'echo $GH_TOKEN >&2' >/dev/null` shows it).
+`1<&2` and `2<&1` copy streams like `>&`, and `|&` acts as a `2>&1` after the
+command's own redirects, as in Bash. A move such as `1>&2-` copies fd 2 onto
+fd 1 and then closes fd 2, and an operator written against a parenthesis
+(`|&(cat)`, `&&(cat .env)`, `(<.env cat)`) splits the same way as with a space.
+Fd numbers are decimal, so `01>&2` and `001<&02-` mean `1>&2` and `1<&2-`.
+It reads the commands inside `bash -c`, `sh -c`, `eval`, `$(…)`, `<(…)`, `>(…)` and backticks,
+including each enclosing body of nested substitutions. Shells nested more than three
+levels deep are denied rather than skipped.
+A single-quoted `$NAME` is literal (`echo '$GH_TOKEN'`), but inside
+`bash -c 'echo $GH_TOKEN'` or `eval` the inner shell expands it, so it counts.
+It skips heredoc bodies and allows any command it cannot split.
+
+It does not cover recursive searches (`grep -r KEY .`), other interpreter code
+(Python scripts and heredocs, `node -e`, `ruby -e`), `git show` or `git diff` of an env file, remote
+commands (`ssh host cat .env`), a variable that holds the name (`printenv $v`),
+other credential files such as `~/.netrc` or `~/.aws/credentials`, or a secret
+written to a file and read back later.
 
 ### Owner guard switches
 

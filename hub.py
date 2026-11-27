@@ -1318,7 +1318,7 @@ def guard_stats(args):
         denied = [r for r in rows if r.get("verdict") == "deny"]
         guards = Counter(r.get("guard", "chain") for r in denied)
         print(f"{label}: {len(rows)} calls, {len(denied)} denials ({len(denied) / len(rows):.1%})")
-        print("  " + ", ".join(f"{guard}={guards[guard]}" for guard in ("owner", "publication", "dispatch", "chain")))
+        print("  " + ", ".join(f"{guard}={guards[guard]}" for guard in ("owner", "publication", "dispatch", "secrets", "chain")))
         reasons = Counter(re.sub(r"(['\"])(?:\\.|(?!\1).)*?\1", "…", r.get("reason", "")) for r in denied)
         for reason, count in reasons.most_common(10):
             print(f"  {count}: {reason}")

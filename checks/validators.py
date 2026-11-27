@@ -40,7 +40,7 @@ POLICY_FILES = (
     "tests/test_decision_replay.py", "tests/test_drift_check.py", "tests/test_guard_replay.py",
     "tests/test_hook_aliases.py", "tests/test_hooks.py", "tests/test_hub_model.py", "tests/test_live_coldstack.py", "tests/test_loop_guard.py",
     "tests/test_merge_rule.py", "tests/test_model_policy.py", "tests/test_owner_rules.py",
-    "tests/test_route_consumers.py", "tests/test_verify_loop.py",
+    "tests/test_route_consumers.py", "tests/test_secret_guard.py", "tests/test_verify_loop.py",
     "tools/codex_findings.py", "tools/context_budget.py",
     "tools/decision_replay.py", "tools/guard_replay.py", *(f"skills/{name}" for name in POLICY_SKILLS),
 )

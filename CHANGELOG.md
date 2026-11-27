@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A new always-on secret-read guard in the Coldlocker hook denies tool calls that would expose live secrets: reading or sourcing `.env`, `.envrc` or `.env.<name>` (Read, Grep, `<` redirects, `source` and `.`, readers such as `cat`, `grep` and `sed`, and `python -c` code, including through symlinks and `cd`), dumping the environment (`printenv` or `env` with no command, `export -p`, `declare -x`, bare `set`, `/proc/*/environ`, `os.environ` in `python -c`), and showing secret-looking variables (`printenv GH_TOKEN`, `echo $ANTHROPIC_API_KEY`). `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `.env.schema`, `env VAR=val cmd`, `printenv PATH` and tokens piped to another program stay allowed. See [docs/hooks.md](docs/hooks.md#secret-read-guard).
+
 - `hub.py guard-audit [--json]` compares Claude Code and Codex hook files with Coldlocker's install receipts and reports `PASS`, `FAIL` or `INCOMPLETE` with each added, missing or changed hook, changed setting and missing or invalid receipt. Receipts now record a hook and setting snapshot. The owner guard denies agent writes to the user-level `~/.claude/settings*.json`, `~/.codex/hooks.json`, `~/.codex/config.toml` and `~/.cursor/hooks.json` (or `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME`) and to Coldlocker receipts; project settings stay editable.
 
 - Custom modes: `~/.coldlocker/modes.json` maps a mode name to `reminders` and `keep_going`, and a `<mode>:` prompt prefix turns that mode on for the session; `work:` leaves it. A mode cannot change a guard: any other key makes the file invalid and no mode applies. `guards.json` always wins over a mode.
